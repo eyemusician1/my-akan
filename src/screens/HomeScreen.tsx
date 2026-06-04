@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -9,10 +9,82 @@ import {
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { palette, spacing } from '../tokens/colors';
-import { ScheduleView } from '../features/schedule/components/ScheduleView';
+import withObservables from '@nozbe/with-observables';
+import { Q } from '@nozbe/watermelondb';
 
-// CHANGED: Added navigation prop here
+import { palette, spacing } from '../tokens';
+import { ScheduleView } from '../features/schedule/components/ScheduleView';
+import { database } from '../core/database';
+import Schedule from '../core/database/models/Schedule';
+
+// --- TIME FORMATTING HELPER ---
+const getTimeAgo = (date: Date) => {
+  if (!date) return 'Just now';
+  const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+  if (seconds < 60) return 'Just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hrs ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} days ago`;
+};
+
+// --- REACTIVE CARD COMPONENT ---
+const ScheduleCardItemUI = ({ schedule, subjectCount }: { schedule: Schedule, subjectCount: number }) => {
+  // REDESIGNED: Borderless empty state when subjects are removed completely
+  if (subjectCount === 0) {
+    return (
+      <View style={styles.emptyState}>
+        <MaterialIcon name="folder-open" size={32} color={palette.muted} />
+        <Text style={styles.emptyStateTitle}>Schedule is empty</Text>
+        <Text style={styles.emptyStateSub}>Add subjects via manual entry or scanner.</Text>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
+      <View style={styles.cardIconBox}>
+        <MaterialIcon name="event-note" size={28} color={palette.secondary} />
+      </View>
+      <View style={styles.cardTextGroup}>
+        <Text style={styles.cardTitle}>{schedule.academicTerm} Schedule</Text>
+        <Text style={styles.cardSubtitle}>
+          {subjectCount} subject{subjectCount !== 1 ? 's' : ''} • Updated {getTimeAgo(schedule.createdAt)}
+        </Text>
+      </View>
+    </Pressable>
+  );
+};
+
+const EnhancedScheduleCardItem = withObservables(['schedule'], ({ schedule }: { schedule: Schedule }) => ({
+  schedule: schedule.observe(),
+  subjectCount: schedule.subjects.observeCount(),
+}))(ScheduleCardItemUI);
+
+const RecentScheduleListUI = ({ schedules }: { schedules: Schedule[] }) => {
+  const latestSchedule = schedules[0];
+
+  // REDESIGNED: Clean, subtle, and borderless initial empty state matching the schedules view
+  if (!latestSchedule) {
+    return (
+      <View style={styles.emptyState}>
+        <MaterialIcon name="calendar-today" size={32} color={palette.muted} />
+        <Text style={styles.emptyStateTitle}>No schedules yet</Text>
+        <Text style={styles.emptyStateSub}>Tap '+' to create your first schedule.</Text>
+      </View>
+    );
+  }
+
+  return <EnhancedScheduleCardItem schedule={latestSchedule} />;
+};
+
+const RecentScheduleWrapper = withObservables([], () => ({
+  schedules: database.collections.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).observe(),
+}))(RecentScheduleListUI);
+
+
 export function HomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const [activeFilter, setActiveFilter] = useState('Recent');
@@ -34,22 +106,31 @@ export function HomeScreen({ navigation }: any) {
     extrapolate: 'clamp',
   });
 
-  const renderRecent = () => (
-    <Pressable
-      style={({ pressed }) => [
-        styles.card,
-        pressed && styles.cardPressed
-      ]}
-    >
-      <View style={styles.cardIconBox}>
-        <MaterialIcon name="event-note" size={28} color={palette.secondary} />
-      </View>
-      <View style={styles.cardTextGroup}>
-        <Text style={styles.cardTitle}>1st Semester Schedule</Text>
-        <Text style={styles.cardSubtitle}>8 subjects • Updated 2 hrs ago</Text>
-      </View>
-    </Pressable>
-  );
+  useEffect(() => {
+    const cleanupEmptySchedules = async () => {
+      try {
+        const schedules = await database.collections.get<Schedule>('schedules').query().fetch();
+        const emptySchedules: Schedule[] = [];
+
+        for (const sch of schedules) {
+          const count = await sch.subjects.fetchCount();
+          if (count === 0) emptySchedules.push(sch);
+        }
+
+        if (emptySchedules.length > 0) {
+          await database.write(async () => {
+            for (const sch of emptySchedules) {
+              await sch.destroyPermanently();
+            }
+          });
+        }
+      } catch (error) {
+        console.error("Cleanup failed", error);
+      }
+    };
+
+    cleanupEmptySchedules();
+  }, [activeFilter]);
 
   return (
     <View style={styles.container}>
@@ -61,7 +142,7 @@ export function HomeScreen({ navigation }: any) {
             style={styles.logo}
             resizeMode="contain"
           />
-          <Text style={styles.headerTitle}>Trak'n</Text>
+          <Text style={styles.headerTitle}>Trakn</Text>
         </View>
         <View style={styles.avatar}>
           <MaterialIcon name="person" size={20} color={palette.surface} />
@@ -101,7 +182,7 @@ export function HomeScreen({ navigation }: any) {
         )}
         scrollEventThrottle={16}
       >
-        {activeFilter === 'Recent' && renderRecent()}
+        {activeFilter === 'Recent' && <RecentScheduleWrapper />}
         {activeFilter === 'Schedules' && <ScheduleView />}
       </Animated.ScrollView>
 
@@ -239,6 +320,27 @@ const styles = StyleSheet.create({
 
   pressedState: {
     opacity: 0.7,
+  },
+
+  /* --- NEW SUBTLE BORDERLESS EMPTY STATE STYLES --- */
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+  },
+  emptyStateTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: palette.muted,
+    marginTop: 12,
+    textAlign: 'center'
+  },
+  emptyStateSub: {
+    fontSize: 14,
+    color: palette.muted,
+    marginTop: 4,
+    textAlign: 'center',
+    opacity: 0.8
   },
 
   dimOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(251, 251, 253, 0.9)', zIndex: 10 },

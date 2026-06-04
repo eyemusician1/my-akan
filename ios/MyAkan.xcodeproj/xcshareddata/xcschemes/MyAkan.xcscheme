@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-               BuildableName = "MyAkan.app"
-               BlueprintName = "MyAkan"
-               ReferencedContainer = "container:MyAkan.xcodeproj">
+               BuildableName = "Trakn.app"
+               BlueprintName = "Trakn"
+               ReferencedContainer = "container:Trakn.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -33,9 +33,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "00E356ED1AD99517003FC87E"
-               BuildableName = "MyAkanTests.xctest"
-               BlueprintName = "MyAkanTests"
-               ReferencedContainer = "container:MyAkan.xcodeproj">
+               BuildableName = "TraknTests.xctest"
+               BlueprintName = "TraknTests"
+               ReferencedContainer = "container:Trakn.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -55,9 +55,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "MyAkan.app"
-            BlueprintName = "MyAkan"
-            ReferencedContainer = "container:MyAkan.xcodeproj">
+            BuildableName = "Trakn.app"
+            BlueprintName = "Trakn"
+            ReferencedContainer = "container:Trakn.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -72,9 +72,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "MyAkan.app"
-            BlueprintName = "MyAkan"
-            ReferencedContainer = "container:MyAkan.xcodeproj">
+            BuildableName = "Trakn.app"
+            BlueprintName = "Trakn"
+            ReferencedContainer = "container:Trakn.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

@@ -6,11 +6,16 @@ import {
   TouchableOpacity,
   LayoutAnimation,
   Platform,
-  UIManager
+  UIManager,
+  Modal
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
-import { palette } from '../../../shared/tokens/colors';
-import { spacing } from '../../../shared/tokens/spacing';
+import withObservables from '@nozbe/with-observables';
+import { useNavigation } from '@react-navigation/native';
+
+import { palette, spacing } from '../../../tokens';
+import { database } from '../../../core/database';
+import Subject from '../../../core/database/models/Subject';
 
 if (Platform.OS === 'android') {
   if (UIManager.setLayoutAnimationEnabledExperimental) {
@@ -18,56 +23,24 @@ if (Platform.OS === 'android') {
   }
 }
 
-// --- ACTUAL COR SCHEDULE DATA ---
-const mockSchedule = [
-  {
-    id: '1', dayLabel: 'MW', days: ['Mon', 'Wed'],
-    startTime: 12, endTime: 14.5, time: '12:00 PM', endTimeStr: '02:30 PM', code: 'ITD110',
-    title: 'NoSQL Databases', room: 'Room 305', instructor: 'Dr. Ampog',
-    themeColor: palette.terracotta, bgTint: 'rgba(122, 28, 28, 0.08)'
-  },
-  {
-    id: '2', dayLabel: 'MW', days: ['Mon', 'Wed'],
-    startTime: 14.5, endTime: 16, time: '02:30 PM', endTimeStr: '04:00 PM', code: 'ITE182',
-    title: 'Systems Integration & Admin', room: 'Maclab', instructor: 'TBA',
-    themeColor: palette.body, bgTint: 'rgba(197, 160, 89, 0.15)'
-  },
-  {
-    id: '3', dayLabel: 'TH', days: ['Tue', 'Thu'],
-    startTime: 8.5, endTime: 10, time: '08:30 AM', endTimeStr: '10:00 AM', code: 'STT071.1',
-    title: 'Prob & Stat Inference (Lab)', room: 'Room 306', instructor: 'Prof. Bayon-on',
-    themeColor: palette.ink, bgTint: 'rgba(28, 28, 30, 0.06)'
-  },
-  {
-    id: '4', dayLabel: 'TH', days: ['Tue', 'Thu'],
-    startTime: 10.5, endTime: 13, time: '10:30 AM', endTimeStr: '01:00 PM', code: 'ITE192',
-    title: 'Information Engineering', room: 'TBA', instructor: 'Prof. Gomez',
-    themeColor: palette.terracotta, bgTint: 'rgba(122, 28, 28, 0.08)'
-  },
-  {
-    id: '5', dayLabel: 'FS', days: ['Fri', 'Sat'],
-    startTime: 14.5, endTime: 17, time: '02:30 PM', endTimeStr: '05:00 PM', code: 'ITD104',
-    title: 'Database Security & Admin', room: 'Room 202', instructor: 'TBA',
-    themeColor: palette.body, bgTint: 'rgba(197, 160, 89, 0.15)'
-  },
-  {
-    id: '6', dayLabel: 'F', days: ['Fri'],
-    startTime: 8.5, endTime: 11.5, time: '08:30 AM', endTimeStr: '11:30 AM', code: 'ITE193',
-    title: 'Special Topics in IT', room: 'Room 202', instructor: 'TBA',
-    themeColor: palette.ink, bgTint: 'rgba(28, 28, 30, 0.06)'
-  },
-  {
-    id: '7', dayLabel: 'MW', days: ['Mon', 'Wed'],
-    startTime: 8.5, endTime: 10, time: '08:30 AM', endTimeStr: '10:00 AM', code: 'STT071',
-    title: 'Prob & Stat Inference', room: 'Room FL', instructor: 'TBA',
-    themeColor: palette.terracotta, bgTint: 'rgba(122, 28, 28, 0.08)'
-  },
-];
-
 const HOUR_HEIGHT = 60;
 const START_HOUR = 7;
 const HOURS = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const getDayLabel = (days: string[]) => {
+  const map: Record<string, string> = { Mon: 'M', Tue: 'T', Wed: 'W', Thu: 'TH', Fri: 'F', Sat: 'S' };
+  return days.map(d => map[d] || d).join('');
+};
+
+const timeToDecimal = (timeStr: string) => {
+  if (!timeStr) return 0;
+  const [time, period] = timeStr.split(' ');
+  let [hours, minutes] = time.split(':').map(Number);
+  if (period === 'PM' && hours !== 12) hours += 12;
+  if (period === 'AM' && hours === 12) hours = 0;
+  return hours + (minutes / 60);
+};
 
 const formatHour = (hour: number) => {
   const ampm = hour >= 12 ? 'PM' : 'AM';
@@ -75,12 +48,17 @@ const formatHour = (hour: number) => {
   return `${formatted} ${ampm}`;
 };
 
-const ExpandableEventCard = ({ item }: { item: typeof mockSchedule[0] }) => {
+const ExpandableEventCard = ({ item, onDelete }: { item: any, onDelete: () => void }) => {
+  const navigation = useNavigation<any>();
   const [isExpanded, setIsExpanded] = useState(false);
 
   const toggleExpand = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setIsExpanded(!isExpanded);
+  };
+
+  const handleEdit = () => {
+    navigation.navigate('ManualEntry', { editSubjectId: item.id });
   };
 
   return (
@@ -97,7 +75,7 @@ const ExpandableEventCard = ({ item }: { item: typeof mockSchedule[0] }) => {
       >
         <View style={styles.cardHeader}>
           <Text style={[styles.eventTitle, { color: item.themeColor }]} numberOfLines={1}>
-            {item.code}
+            {item.code} {item.section ? `(${item.section})` : ''}
           </Text>
           <MaterialIcon
             name={isExpanded ? "keyboard-arrow-up" : "keyboard-arrow-down"}
@@ -117,13 +95,25 @@ const ExpandableEventCard = ({ item }: { item: typeof mockSchedule[0] }) => {
 
         {isExpanded && (
           <View style={styles.footerRow}>
-            <View style={styles.footerItem}>
-              <MaterialIcon name="room" size={16} color={item.themeColor} style={styles.iconOp} />
-              <Text style={[styles.footerText, { color: item.themeColor }]}>{item.room}</Text>
+            <View style={styles.footerInfo}>
+              <View style={styles.footerItem}>
+                <MaterialIcon name="room" size={16} color={item.themeColor} style={styles.iconOp} />
+                <Text style={[styles.footerText, { color: item.themeColor }]}>{item.room || 'TBA'}</Text>
+              </View>
+              <View style={styles.footerItem}>
+                <MaterialIcon name="person" size={16} color={item.themeColor} style={styles.iconOp} />
+                <Text style={[styles.footerText, { color: item.themeColor }]}>{item.instructor || 'TBA'}</Text>
+              </View>
             </View>
-            <View style={styles.footerItem}>
-              <MaterialIcon name="person" size={16} color={item.themeColor} style={styles.iconOp} />
-              <Text style={[styles.footerText, { color: item.themeColor }]}>{item.instructor}</Text>
+
+            <View style={styles.footerActions}>
+              <TouchableOpacity style={styles.actionBtn} onPress={handleEdit} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <MaterialIcon name="edit" size={18} color={palette.muted} />
+              </TouchableOpacity>
+              {/* TRIGGER CUSTOM MODAL ON DELETE */}
+              <TouchableOpacity style={styles.actionBtn} onPress={onDelete} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <MaterialIcon name="delete-outline" size={18} color={palette.muted} />
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -132,10 +122,10 @@ const ExpandableEventCard = ({ item }: { item: typeof mockSchedule[0] }) => {
   );
 };
 
-export function ScheduleView() {
+const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
   const [viewMode, setViewMode] = useState<'agenda' | 'week'>('agenda');
+  const [itemToDelete, setItemToDelete] = useState<any>(null);
 
-  // Dynamic Date Setup
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const dayNamesFull = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const today = new Date();
@@ -143,12 +133,61 @@ export function ScheduleView() {
   const currentDayName = dayNamesFull[today.getDay()];
   const currentDateString = `${currentDayName}, ${monthNames[today.getMonth()]} ${today.getDate()}`;
 
-  // SMART SORTING & FILTERING
   const activeDay = DAYS.includes(currentDayName) ? currentDayName : 'Mon';
 
-  const agendaItems = mockSchedule
+  const themeColors = [palette.primary, palette.body, palette.ink];
+  const bgTints = ['rgba(122, 28, 28, 0.08)', 'rgba(197, 160, 89, 0.15)', 'rgba(28, 28, 30, 0.06)'];
+
+  const liveSchedule = subjects.map((subj, index) => {
+    const cIdx = index % themeColors.length;
+    return {
+      id: subj.id,
+      rawModel: subj,
+      dayLabel: getDayLabel(subj.days),
+      days: subj.days,
+      startTime: timeToDecimal(subj.startTime),
+      endTime: timeToDecimal(subj.endTime),
+      time: subj.startTime,
+      endTimeStr: subj.endTime,
+      code: subj.code,
+      section: subj.section,
+      title: subj.title,
+      room: subj.room,
+      instructor: subj.instructor,
+      themeColor: themeColors[cIdx],
+      bgTint: bgTints[cIdx]
+    };
+  });
+
+  const agendaItems = liveSchedule
     .filter(item => item.days.includes(activeDay))
     .sort((a, b) => a.startTime - b.startTime);
+
+  // --- SMART CASCADING DELETE LOGIC ---
+  const confirmDelete = async () => {
+    if (!itemToDelete) return;
+
+    try {
+      await database.write(async () => {
+        const subjectModel = itemToDelete.rawModel;
+        const parentSchedule = await subjectModel.schedule.fetch();
+
+        // Count siblings BEFORE deletion
+        const siblings = await parentSchedule.subjects.fetch();
+
+        await subjectModel.destroyPermanently();
+
+        // If this was the only subject, destroy the parent schedule as well
+        if (siblings.length <= 1) {
+          await parentSchedule.destroyPermanently();
+        }
+      });
+    } catch (error) {
+      console.error("Delete failed", error);
+    } finally {
+      setItemToDelete(null);
+    }
+  };
 
   const renderAgenda = () => {
     if (agendaItems.length === 0) {
@@ -168,8 +207,6 @@ export function ScheduleView() {
 
     return (
       <View style={styles.eventsContainer}>
-
-        {/* SMART: Whole Morning Free Detection */}
         {firstClassStart >= 12 && (
           <View style={styles.freeTimeWrapper}>
             <View style={styles.freeTimePill}>
@@ -183,7 +220,6 @@ export function ScheduleView() {
           let freeTimeIndicator = null;
           let sectionHeader = null;
 
-          // --- MORNING / AFTERNOON INDICATOR LOGIC ---
           if (item.startTime < 12 && !renderedMorning) {
             renderedMorning = true;
             sectionHeader = (
@@ -202,7 +238,6 @@ export function ScheduleView() {
             );
           }
 
-          // --- BETWEEN CLASS GAP CALCULATION ---
           if (index > 0) {
             const prevItem = agendaItems[index - 1];
             const gap = item.startTime - prevItem.endTime;
@@ -230,13 +265,14 @@ export function ScheduleView() {
             <Fragment key={item.id}>
               {sectionHeader}
               {freeTimeIndicator}
-              <ExpandableEventCard item={item} />
+              <ExpandableEventCard
+                item={item}
+                onDelete={() => setItemToDelete(item)}
+              />
             </Fragment>
           );
         })}
 
-        {/* SMART: Whole Afternoon Free Detection */}
-        {/* If the last class ends before or at 12:30 PM, the afternoon is free */}
         {lastClassEnd <= 12.5 && (
           <View style={styles.freeTimeWrapper}>
             <View style={styles.freeTimePill}>
@@ -271,7 +307,7 @@ export function ScheduleView() {
                 <View key={hour} style={styles.gridLine} />
               ))}
 
-              {mockSchedule
+              {liveSchedule
                 .filter(item => item.days.includes(day))
                 .map(item => {
                   const topPosition = (item.startTime - START_HOUR) * HOUR_HEIGHT;
@@ -328,9 +364,38 @@ export function ScheduleView() {
       </View>
 
       {viewMode === 'agenda' ? renderAgenda() : renderWeek()}
+
+      {/* --- CUSTOM DELETE CONFIRMATION MODAL --- */}
+      <Modal visible={!!itemToDelete} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalIconContainer}>
+              <MaterialIcon name="delete-outline" size={32} color={palette.primary} />
+            </View>
+            <Text style={styles.modalTitle}>Remove Class</Text>
+            <Text style={styles.modalMessage}>
+              Are you sure you want to remove <Text style={styles.modalHighlight}>{itemToDelete?.code}</Text> from your schedule? This action cannot be undone.
+            </Text>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setItemToDelete(null)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalDeleteBtn} onPress={confirmDelete}>
+                <Text style={styles.modalDeleteText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
-}
+};
+
+export const ScheduleView = withObservables([], () => ({
+  subjects: database.collections.get<Subject>('subjects').query().observe(),
+}))(ScheduleViewUI);
 
 const styles = StyleSheet.create({
   container: { marginTop: spacing.sm },
@@ -342,7 +407,6 @@ const styles = StyleSheet.create({
   toggleButton: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
   toggleButtonActive: { backgroundColor: palette.surface, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
 
-  /* --- AGENDA STYLES --- */
   eventsContainer: { gap: 16 },
   eventRow: { flexDirection: 'row', alignItems: 'flex-start' },
   timeColumn: { width: 68, paddingTop: 12, paddingRight: spacing.md },
@@ -355,53 +419,38 @@ const styles = StyleSheet.create({
   eventSubtitle: { fontSize: 15, color: palette.ink, fontWeight: '600', marginBottom: 6, opacity: 0.85 },
   dayLabelHighlight: { fontWeight: '700' },
   eventTimeRange: { fontSize: 14, color: palette.ink, opacity: 0.7, fontWeight: '500' },
-  footerRow: { flexDirection: 'row', gap: spacing.lg, marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderColor: 'rgba(0,0,0,0.05)' },
+
+  footerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderColor: 'rgba(0,0,0,0.05)' },
+  footerInfo: { flexDirection: 'row', gap: spacing.lg },
+  footerActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  actionBtn: { padding: 4, backgroundColor: 'rgba(0,0,0,0.04)', borderRadius: 8 },
   footerItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   iconOp: { opacity: 0.8 },
   footerText: { fontSize: 13, fontWeight: '600', opacity: 0.85 },
 
-  /* --- EMPTY STATE STYLES --- */
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
   emptyStateText: { marginTop: 12, fontSize: 15, color: palette.muted, fontWeight: '500' },
 
-  /* --- SECTION HEADER STYLES (Morning/Afternoon) --- */
-  timeSectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingLeft: 68 + spacing.sm, // Aligns perfectly with the start of the cards
-    marginTop: spacing.xs,
-    marginBottom: spacing.xs,
-  },
-  timeSectionText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: palette.muted,
-    marginLeft: 6,
-    letterSpacing: 0.8,
-  },
+  timeSectionHeader: { flexDirection: 'row', alignItems: 'center', paddingLeft: 68 + spacing.sm, marginTop: spacing.xs, marginBottom: spacing.xs },
+  timeSectionText: { fontSize: 11, fontWeight: '700', color: palette.muted, marginLeft: 6, letterSpacing: 0.8 },
 
-  /* --- FREE TIME INDICATOR STYLES --- */
-  freeTimeWrapper: {
-    paddingLeft: 68 + spacing.sm,
-    paddingVertical: 2,
-    alignItems: 'flex-start',
-  },
-  freeTimePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(28, 28, 30, 0.04)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-  },
-  freeTimeText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: palette.muted,
-    marginLeft: 6,
-  },
+  freeTimeWrapper: { paddingLeft: 68 + spacing.sm, paddingVertical: 2, alignItems: 'flex-start' },
+  freeTimePill: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(28, 28, 30, 0.04)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
+  freeTimeText: { fontSize: 12, fontWeight: '600', color: palette.muted, marginLeft: 6 },
 
-  /* --- WEEK GRID STYLES --- */
+  /* --- CUSTOM MODAL STYLES --- */
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.4)', justifyContent: 'center', alignItems: 'center', padding: spacing.xl },
+  modalContent: { width: '100%', backgroundColor: palette.surface, borderRadius: 28, padding: spacing.xl, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 10 },
+  modalIconContainer: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(122, 28, 28, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: spacing.md },
+  modalTitle: { fontSize: 22, fontWeight: '700', color: palette.ink, marginBottom: spacing.xs },
+  modalMessage: { fontSize: 15, color: palette.body, textAlign: 'center', lineHeight: 22, marginBottom: spacing.xl, paddingHorizontal: spacing.sm },
+  modalHighlight: { fontWeight: '700', color: palette.ink },
+  modalActions: { flexDirection: 'row', width: '100%', gap: spacing.md },
+  modalCancelBtn: { flex: 1, height: 52, borderRadius: 26, backgroundColor: 'rgba(28, 28, 30, 0.05)', justifyContent: 'center', alignItems: 'center' },
+  modalCancelText: { fontSize: 16, fontWeight: '600', color: palette.ink },
+  modalDeleteBtn: { flex: 1, height: 52, borderRadius: 26, backgroundColor: palette.primary, justifyContent: 'center', alignItems: 'center' },
+  modalDeleteText: { fontSize: 16, fontWeight: '600', color: palette.surface },
+
   weekGridWrapper: { flexDirection: 'row', borderTopWidth: 1, borderColor: palette.border, paddingTop: spacing.sm },
   timeAxis: { width: 44 },
   dayHeaderSpacer: { height: 36 },

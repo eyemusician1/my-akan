@@ -4,14 +4,14 @@ import {
   Text,
   View,
   TextInput,
-  TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
   TouchableWithoutFeedback,
   Keyboard,
   Pressable
 } from 'react-native';
-import { palette, spacing } from '../tokens/colors';
+// CHANGED: Pointing to the index file instead of colors.ts
+import { palette, spacing } from '../tokens';
 
 interface NamePromptScreenProps {
   onComplete: (name: string) => void;
@@ -35,10 +35,8 @@ export function NamePromptScreen({ onComplete }: NamePromptScreenProps) {
         <View style={styles.innerContainer}>
 
           <View style={styles.topSection}>
-            {/* Removed the hardcoded \n and let the layout engine wrap it naturally */}
             <Text style={styles.title}>What should we call you?</Text>
 
-            {/* Updated subtitle for the offline tracker context */}
             <Text style={styles.subtitle}>
               Your name stays entirely on this device. It will be used to personalize your local dashboard and offline reports.
             </Text>
@@ -102,11 +100,11 @@ const styles = StyleSheet.create({
     marginTop: spacing.xl,
   },
   title: {
-    fontSize: 38, // Scaled down slightly from 42 to fit most screens perfectly on two lines
+    fontSize: 38,
     fontWeight: '800',
     color: palette.ink,
     letterSpacing: -1,
-    lineHeight: 44, // Adjusted to match the new font size
+    lineHeight: 44,
     marginBottom: spacing.md,
   },
   subtitle: {
@@ -159,7 +157,7 @@ const styles = StyleSheet.create({
     color: palette.surface,
   },
     buttonPressed: {
-        transform: [{ scale: 0.96 }], // Slightly deeper press for the pill button
+        transform: [{ scale: 0.96 }],
         opacity: 0.9,
     },
 });

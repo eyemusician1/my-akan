@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, View, Pressable, ImageBackground, Image } from 'react-native';
-import { palette, spacing } from '../tokens/colors';
+// CHANGED: Pointing to the index file instead of colors.ts
+import { palette, spacing } from '../tokens';
 
 interface WelcomeScreenProps {
   onGetStarted: () => void;
@@ -22,7 +23,7 @@ export function WelcomeScreen({ onGetStarted }: WelcomeScreenProps) {
             style={styles.headerLogo}
             resizeMode="contain"
           />
-          <Text style={styles.headerTitle}>Trak'n</Text>
+          <Text style={styles.headerTitle}>Trakn</Text>
         </View>
 
         {/* Centered Hero Section */}
@@ -62,7 +63,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'space-between',
     paddingHorizontal: spacing.xl,
-    paddingTop: spacing.xxl * 1.5, // Pushes header down from the status bar
+    paddingTop: spacing.xxl * 1.5,
     paddingBottom: spacing.xxl,
   },
 
@@ -91,24 +92,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   headlineWhite: {
-    fontSize: 48, // Scaled up significantly from 38
+    fontSize: 48,
     fontWeight: '700',
     color: palette.surface,
-    letterSpacing: -1.5, // Tighter tracking prevents large text from looking scattered
+    letterSpacing: -1.5,
     textAlign: 'center',
-    lineHeight: 52, // Locks the white text closely to the gold text
+    lineHeight: 52,
   },
   headlineGold: {
-    fontSize: 48, // Matches the massive white header
+    fontSize: 48,
     fontWeight: '700',
     color: palette.secondary,
     letterSpacing: -1.5,
     textAlign: 'center',
     lineHeight: 52,
-    marginBottom: spacing.xl, // Increased space between the massive headers and the subtitle
+    marginBottom: spacing.xl,
   },
   subtitle: {
-    fontSize: 18, // Bumped from 16 to 18 since there are fewer words now
+    fontSize: 18,
     color: 'rgba(255, 255, 255, 0.85)',
     lineHeight: 28,
     fontWeight: '400',
@@ -123,8 +124,8 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
   },
   button: {
-    backgroundColor: palette.ink, // Solid dark charcoal to contrast the gold glow
-    paddingHorizontal: 48, // Creates the compact pill shape instead of full width
+    backgroundColor: palette.ink,
+    paddingHorizontal: 48,
     height: 60,
     borderRadius: 30,
     justifyContent: 'center',

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -15,7 +15,12 @@ import {
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { palette, spacing } from '../tokens/colors';
+import { Q } from '@nozbe/watermelondb';
+
+import { palette, spacing } from '../tokens';
+import { database } from '../core/database';
+import Schedule from '../core/database/models/Schedule';
+import Subject from '../core/database/models/Subject';
 
 if (Platform.OS === 'android') {
   if (UIManager.setLayoutAnimationEnabledExperimental) {
@@ -35,18 +40,18 @@ const DAYS_OF_WEEK = [
 const TERMS = ['1st Sem', '2nd Sem', 'Summer'];
 const UNITS = [1, 2, 3, 4, 5, 6];
 
-export function ManualEntryScreen({ navigation }: any) {
+export function ManualEntryScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
 
-  // --- ENROLLMENT CONTEXT (Sticky) ---
+  // Extract edit ID if we navigated here from the Edit button
+  const editSubjectId = route?.params?.editSubjectId;
+
   const [semester, setSemester] = useState('1st Sem');
   const [totalSubjects, setTotalSubjects] = useState('');
 
-  // --- PROGRESS TRACKING ---
   const [addedCount, setAddedCount] = useState(0);
   const [totalAddedUnits, setTotalAddedUnits] = useState(0);
 
-  // --- CURRENT SUBJECT DETAILS ---
   const [code, setCode] = useState('');
   const [section, setSection] = useState('');
   const [title, setTitle] = useState('');
@@ -62,9 +67,44 @@ export function ManualEntryScreen({ navigation }: any) {
   const [endTime, setEndTime] = useState('');
   const [endAmPm, setEndAmPm] = useState<'AM' | 'PM'>('AM');
 
-  // --- STRICT LIMIT LOGIC FOR UNITS ---
   const maxUnits = semester === 'Summer' ? 6 : 24;
   const isOverload = (totalAddedUnits + units) > maxUnits;
+
+  // --- PRE-FILL DATA FOR EDITING ---
+  useEffect(() => {
+    if (editSubjectId) {
+      const loadSubject = async () => {
+        try {
+          const subject = await database.get<Subject>('subjects').find(editSubjectId);
+          const sched = await subject.schedule.fetch();
+
+          setSemester(sched.academicTerm);
+          setAddedCount(1); // Mutes the "Total Enrolled Subjects" field since we are just editing one
+          setCode(subject.code);
+          setSection(subject.section || '');
+          setTitle(subject.title);
+          setUnits(subject.units);
+          setRoom(subject.room || '');
+          setInstructor(subject.instructor || '');
+          setSelectedDays(subject.days);
+
+          // Puts "8:30 AM" into ["8:30", "AM"] and pads it to "08:30" so length validation instantly passes
+          let [sTime, sAmPm] = subject.startTime.split(' ');
+          if (sTime.length === 4) sTime = `0${sTime}`;
+          setStartTime(sTime);
+          setStartAmPm(sAmPm as any);
+
+          let [eTime, eAmPm] = subject.endTime.split(' ');
+          if (eTime.length === 4) eTime = `0${eTime}`;
+          setEndTime(eTime);
+          setEndAmPm(eAmPm as any);
+        } catch (e) {
+          console.error("Failed to load subject", e);
+        }
+      };
+      loadSubject();
+    }
+  }, [editSubjectId]);
 
   const handleTermChange = (term: string) => {
     Keyboard.dismiss();
@@ -76,8 +116,6 @@ export function ManualEntryScreen({ navigation }: any) {
     }
   };
 
-  // CHANGED: Fixed the subject count. It no longer caps at 24 or 6.
-  // You can now enter normal subject counts like 8 or 9!
   const handleTotalSubjectsChange = (text: string) => {
     let cleaned = text.replace(/[^0-9]/g, '');
     setTotalSubjects(cleaned);
@@ -122,7 +160,7 @@ export function ManualEntryScreen({ navigation }: any) {
   };
 
   const isFormValid =
-    totalSubjects.trim().length > 0 &&
+    (editSubjectId ? true : totalSubjects.trim().length > 0) && // Skip total subjects requirement if editing
     code.trim().length > 0 &&
     section.trim().length > 0 &&
     title.trim().length > 0 &&
@@ -131,14 +169,66 @@ export function ManualEntryScreen({ navigation }: any) {
     selectedDays.length > 0 &&
     startTime.length === 5 &&
     endTime.length === 5 &&
-    !isOverload; // Form stays locked if Units exceed maxUnits
+    !isOverload;
 
-  const handleSaveAndAddAnother = () => {
+  // --- DATABASE WRITE/UPDATE ACTION ---
+  const saveToDatabase = async () => {
+    await database.write(async () => {
+      const schedules = await database.collections
+        .get<Schedule>('schedules')
+        .query(Q.where('academic_term', semester))
+        .fetch();
+
+      let currentSchedule = schedules[0];
+
+      if (!currentSchedule) {
+        currentSchedule = await database.collections
+          .get<Schedule>('schedules')
+          .create((sch) => {
+            sch.academicTerm = semester;
+            if (totalSubjects) sch.totalSubjects = parseInt(totalSubjects, 10);
+          });
+      }
+
+      if (editSubjectId) {
+        const subjectToUpdate = await database.get<Subject>('subjects').find(editSubjectId);
+        await subjectToUpdate.update((subj: any) => {
+          subj.schedule.set(currentSchedule);
+          subj.code = code;
+          subj.section = section;
+          subj.title = title;
+          subj.units = units;
+          subj.room = room;
+          subj.instructor = instructor;
+          subj.days = selectedDays;
+          subj.startTime = `${startTime} ${startAmPm}`;
+          subj.endTime = `${endTime} ${endAmPm}`;
+        });
+      } else {
+        await database.collections.get('subjects').create((subj: any) => {
+          subj.schedule.set(currentSchedule);
+          subj.code = code;
+          subj.section = section;
+          subj.title = title;
+          subj.units = units;
+          subj.room = room;
+          subj.instructor = instructor;
+          subj.days = selectedDays;
+          subj.startTime = `${startTime} ${startAmPm}`;
+          subj.endTime = `${endTime} ${endAmPm}`;
+        });
+      }
+    });
+  };
+
+  const handleSaveAndAddAnother = async () => {
     Keyboard.dismiss();
+    await saveToDatabase();
+
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
     setAddedCount(prev => prev + 1);
-    setTotalAddedUnits(prev => prev + units); // Adds the units to the running total
+    setTotalAddedUnits(prev => prev + units);
 
     setCode('');
     setSection('');
@@ -152,8 +242,9 @@ export function ManualEntryScreen({ navigation }: any) {
     setIsUnitsOpen(false);
   };
 
-  const handleSaveAndFinish = () => {
+  const handleSaveAndFinish = async () => {
     Keyboard.dismiss();
+    await saveToDatabase();
     navigation.goBack();
   };
 
@@ -175,11 +266,11 @@ export function ManualEntryScreen({ navigation }: any) {
             >
               <MaterialIcon name="arrow-back" size={24} color={palette.ink} />
             </TouchableOpacity>
-            <Text style={styles.headerTitle}>New Schedule</Text>
+            <Text style={styles.headerTitle}>{editSubjectId ? 'Edit Subject' : 'New Schedule'}</Text>
             <View style={styles.headerRight} />
           </View>
 
-          {addedCount > 0 && (
+          {addedCount > 0 && !editSubjectId && (
             <View style={styles.progressBanner}>
               <MaterialIcon name="check-circle" size={18} color={palette.surface} />
               <Text style={styles.progressText}>
@@ -226,7 +317,7 @@ export function ManualEntryScreen({ navigation }: any) {
                 })}
               </View>
 
-              {addedCount === 0 && (
+              {addedCount === 0 && !editSubjectId && (
                 <View style={styles.totalSubjectsWrapper}>
                   <Text style={styles.inputContextLabel}>Total Enrolled Subjects</Text>
                   <TextInput
@@ -234,7 +325,7 @@ export function ManualEntryScreen({ navigation }: any) {
                     placeholder="e.g. 8"
                     placeholderTextColor={palette.muted}
                     value={totalSubjects}
-                    onChangeText={handleTotalSubjectsChange} // Fixed logic here
+                    onChangeText={handleTotalSubjectsChange}
                     keyboardType="number-pad"
                     maxLength={2}
                     returnKeyType="done"
@@ -422,14 +513,16 @@ export function ManualEntryScreen({ navigation }: any) {
           {isFormValid && (
             <View style={[styles.bottomWrapper, { paddingBottom: insets.bottom + spacing.xl }]}>
 
-              <TouchableOpacity
-                style={styles.addAnotherButton}
-                activeOpacity={0.7}
-                onPress={handleSaveAndAddAnother}
-              >
-                <MaterialIcon name="add" size={20} color={palette.primary} />
-                <Text style={styles.addAnotherText}>Save & Add Another</Text>
-              </TouchableOpacity>
+              {!editSubjectId && (
+                <TouchableOpacity
+                  style={styles.addAnotherButton}
+                  activeOpacity={0.7}
+                  onPress={handleSaveAndAddAnother}
+                >
+                  <MaterialIcon name="add" size={20} color={palette.primary} />
+                  <Text style={styles.addAnotherText}>Save & Add Another</Text>
+                </TouchableOpacity>
+              )}
 
               <TouchableOpacity
                 style={styles.fabSave}
@@ -437,7 +530,7 @@ export function ManualEntryScreen({ navigation }: any) {
                 onPress={handleSaveAndFinish}
               >
                 <MaterialIcon name="check" size={24} color={palette.surface} style={styles.fabIcon} />
-                <Text style={styles.fabSaveText}>Save & Finish</Text>
+                <Text style={styles.fabSaveText}>{editSubjectId ? 'Update Subject' : 'Save & Finish'}</Text>
               </TouchableOpacity>
             </View>
           )}
