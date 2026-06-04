@@ -12,7 +12,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { palette, spacing } from '../tokens/colors';
 import { ScheduleView } from '../features/schedule/components/ScheduleView';
 
-export function HomeScreen() {
+// CHANGED: Added navigation prop here
+export function HomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const [activeFilter, setActiveFilter] = useState('Recent');
   const [isFabOpen, setIsFabOpen] = useState(false);
@@ -132,7 +133,13 @@ export function HomeScreen() {
                 <MaterialIcon name="image" size={22} color={palette.ink} />
                 <Text style={styles.fabMenuText}>Upload Image</Text>
               </Pressable>
-              <Pressable style={({ pressed }) => [styles.fabMenuItem, pressed && styles.pressedState]}>
+              <Pressable
+                style={({ pressed }) => [styles.fabMenuItem, pressed && styles.pressedState]}
+                onPress={() => {
+                  setIsFabOpen(false);
+                  navigation.navigate('ManualEntry');
+                }}
+              >
                 <MaterialIcon name="edit" size={22} color={palette.ink} />
                 <Text style={styles.fabMenuText}>Manual Entry</Text>
               </Pressable>
@@ -141,7 +148,6 @@ export function HomeScreen() {
         )}
 
         <View style={styles.fabRow}>
-          {/* Animated Camera Button */}
           <Pressable
             style={({ pressed }) => [
               styles.fabCamera,
@@ -151,7 +157,6 @@ export function HomeScreen() {
             <MaterialIcon name="photo-camera" size={26} color={palette.ink} />
           </Pressable>
 
-          {/* Animated Create New Button */}
           <Pressable
             onPress={() => setIsFabOpen(!isFabOpen)}
             style={({ pressed }) => [
@@ -163,7 +168,6 @@ export function HomeScreen() {
             <MaterialIcon
               name={isFabOpen ? "close" : "add"}
               size={24}
-              // CHANGED: Uses maroon (primary) when open, white (surface) when closed
               color={isFabOpen ? palette.primary : palette.surface}
               style={styles.fabCreateIcon}
             />
@@ -196,23 +200,22 @@ const styles = StyleSheet.create({
   contentArea: { flex: 1 },
   contentPadding: { paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: 160 },
 
-  /* --- REDESIGNED RECENT CARD --- */
   card: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(28, 28, 30, 0.04)',
-    padding: 16, // Smoother internal padding
+    padding: 16,
     borderRadius: 24,
   },
   cardPressed: {
-    transform: [{ scale: 0.98 }], // Subtle press-in effect
+    transform: [{ scale: 0.98 }],
     opacity: 0.9,
   },
   cardIconBox: {
     width: 56,
     height: 56,
     borderRadius: 18,
-    backgroundColor: 'rgba(197, 160, 89, 0.15)', // Warmer background for the icon
+    backgroundColor: 'rgba(197, 160, 89, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: spacing.lg
@@ -234,7 +237,6 @@ const styles = StyleSheet.create({
     fontWeight: '500'
   },
 
-  /* --- GLOBAL ANIMATION STATES --- */
   pressedState: {
     opacity: 0.7,
   },
@@ -249,7 +251,6 @@ const styles = StyleSheet.create({
 
   fabRow: { flexDirection: 'row', justifyContent: 'center', gap: spacing.sm },
 
-  /* --- PROMINENT FABS --- */
   fabCamera: {
     width: 64,
     height: 64,
@@ -268,12 +269,12 @@ const styles = StyleSheet.create({
   fabCreate: {
     height: 64,
     borderRadius: 32,
-    backgroundColor: palette.primary, // CHANGED: Now uses your Maroon brand color
+    backgroundColor: palette.primary,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 28,
-    shadowColor: palette.primary, // CHANGED: Tints the drop shadow maroon for a premium glow
+    shadowColor: palette.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.25,
     shadowRadius: 20,
@@ -288,11 +289,10 @@ const styles = StyleSheet.create({
   },
   fabCreateIcon: { marginRight: spacing.xs },
   fabCreateText: { color: palette.surface, fontSize: 17, fontWeight: '700' },
-  fabCreateTextActive: { color: palette.primary }, // CHANGED: "Cancel" text turns maroon
+  fabCreateTextActive: { color: palette.primary },
 
-  /* Button Animation */
   fabPressed: {
-    transform: [{ scale: 0.95 }], // Gives the buttons a satisfying tactile squish
+    transform: [{ scale: 0.95 }],
     opacity: 0.9,
   },
 });

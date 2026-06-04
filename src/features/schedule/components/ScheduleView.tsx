@@ -144,53 +144,110 @@ export function ScheduleView() {
   const currentDateString = `${currentDayName}, ${monthNames[today.getMonth()]} ${today.getDate()}`;
 
   // SMART SORTING & FILTERING
-  // If today is Sunday (no classes), fallback to Monday to ensure the UI isn't empty.
   const activeDay = DAYS.includes(currentDayName) ? currentDayName : 'Mon';
 
-  // Filter for today's classes and sort them by start time
   const agendaItems = mockSchedule
     .filter(item => item.days.includes(activeDay))
     .sort((a, b) => a.startTime - b.startTime);
 
-  const renderAgenda = () => (
-    <View style={styles.eventsContainer}>
-      {agendaItems.map((item, index) => {
-        let freeTimeIndicator = null;
+  const renderAgenda = () => {
+    if (agendaItems.length === 0) {
+      return (
+        <View style={styles.emptyState}>
+          <MaterialIcon name="celebration" size={32} color={palette.muted} />
+          <Text style={styles.emptyStateText}>No classes today. Enjoy your free time!</Text>
+        </View>
+      );
+    }
 
-        // Calculate gap if it's not the first class
-        if (index > 0) {
-          const prevItem = agendaItems[index - 1];
-          const gap = item.startTime - prevItem.endTime;
+    let renderedMorning = false;
+    let renderedAfternoon = false;
 
-          // Only show indicator if the gap is 1 hour or more
-          if (gap >= 1) {
-            const hrs = Math.floor(gap);
-            const mins = Math.round((gap - hrs) * 60);
-            let gapText = '';
-            if (hrs > 0) gapText += `${hrs} hr `;
-            if (mins > 0) gapText += `${mins} min `;
-            gapText += 'free time';
+    const firstClassStart = agendaItems[0].startTime;
+    const lastClassEnd = agendaItems[agendaItems.length - 1].endTime;
 
-            freeTimeIndicator = (
-              <View style={styles.freeTimeWrapper}>
-                <View style={styles.freeTimePill}>
-                  <MaterialIcon name="local-cafe" size={14} color={palette.muted} />
-                  <Text style={styles.freeTimeText}>{gapText.trim()}</Text>
-                </View>
+    return (
+      <View style={styles.eventsContainer}>
+
+        {/* SMART: Whole Morning Free Detection */}
+        {firstClassStart >= 12 && (
+          <View style={styles.freeTimeWrapper}>
+            <View style={styles.freeTimePill}>
+              <MaterialIcon name="wb-sunny" size={14} color={palette.muted} />
+              <Text style={styles.freeTimeText}>Free morning</Text>
+            </View>
+          </View>
+        )}
+
+        {agendaItems.map((item, index) => {
+          let freeTimeIndicator = null;
+          let sectionHeader = null;
+
+          // --- MORNING / AFTERNOON INDICATOR LOGIC ---
+          if (item.startTime < 12 && !renderedMorning) {
+            renderedMorning = true;
+            sectionHeader = (
+              <View style={styles.timeSectionHeader}>
+                <MaterialIcon name="light-mode" size={14} color={palette.muted} />
+                <Text style={styles.timeSectionText}>MORNING</Text>
+              </View>
+            );
+          } else if (item.startTime >= 12 && !renderedAfternoon) {
+            renderedAfternoon = true;
+            sectionHeader = (
+              <View style={styles.timeSectionHeader}>
+                <MaterialIcon name="dark-mode" size={14} color={palette.muted} />
+                <Text style={styles.timeSectionText}>AFTERNOON</Text>
               </View>
             );
           }
-        }
 
-        return (
-          <Fragment key={item.id}>
-            {freeTimeIndicator}
-            <ExpandableEventCard item={item} />
-          </Fragment>
-        );
-      })}
-    </View>
-  );
+          // --- BETWEEN CLASS GAP CALCULATION ---
+          if (index > 0) {
+            const prevItem = agendaItems[index - 1];
+            const gap = item.startTime - prevItem.endTime;
+
+            if (gap >= 1) {
+              const hrs = Math.floor(gap);
+              const mins = Math.round((gap - hrs) * 60);
+              let gapText = '';
+              if (hrs > 0) gapText += `${hrs} hr `;
+              if (mins > 0) gapText += `${mins} min `;
+              gapText += 'free time';
+
+              freeTimeIndicator = (
+                <View style={styles.freeTimeWrapper}>
+                  <View style={styles.freeTimePill}>
+                    <MaterialIcon name="local-cafe" size={14} color={palette.muted} />
+                    <Text style={styles.freeTimeText}>{gapText.trim()}</Text>
+                  </View>
+                </View>
+              );
+            }
+          }
+
+          return (
+            <Fragment key={item.id}>
+              {sectionHeader}
+              {freeTimeIndicator}
+              <ExpandableEventCard item={item} />
+            </Fragment>
+          );
+        })}
+
+        {/* SMART: Whole Afternoon Free Detection */}
+        {/* If the last class ends before or at 12:30 PM, the afternoon is free */}
+        {lastClassEnd <= 12.5 && (
+          <View style={styles.freeTimeWrapper}>
+            <View style={styles.freeTimePill}>
+              <MaterialIcon name="park" size={14} color={palette.muted} />
+              <Text style={styles.freeTimeText}>Free whole afternoon</Text>
+            </View>
+          </View>
+        )}
+      </View>
+    );
+  };
 
   const renderWeek = () => (
     <View style={styles.weekGridWrapper}>
@@ -279,7 +336,6 @@ const styles = StyleSheet.create({
   container: { marginTop: spacing.sm },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg, paddingHorizontal: spacing.xs },
 
-  // Notice the slightly smaller date text to comfortably fit the Day of Week string
   dateText: { fontSize: 18, fontWeight: '700', color: palette.ink },
 
   toggleWrapper: { flexDirection: 'row', backgroundColor: 'rgba(28, 28, 30, 0.05)', borderRadius: 20, padding: 4 },
@@ -304,16 +360,36 @@ const styles = StyleSheet.create({
   iconOp: { opacity: 0.8 },
   footerText: { fontSize: 13, fontWeight: '600', opacity: 0.85 },
 
+  /* --- EMPTY STATE STYLES --- */
+  emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
+  emptyStateText: { marginTop: 12, fontSize: 15, color: palette.muted, fontWeight: '500' },
+
+  /* --- SECTION HEADER STYLES (Morning/Afternoon) --- */
+  timeSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 68 + spacing.sm, // Aligns perfectly with the start of the cards
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+  },
+  timeSectionText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: palette.muted,
+    marginLeft: 6,
+    letterSpacing: 0.8,
+  },
+
   /* --- FREE TIME INDICATOR STYLES --- */
   freeTimeWrapper: {
-    paddingLeft: 68 + spacing.sm, // Aligns exactly with the start of the event cards
+    paddingLeft: 68 + spacing.sm,
     paddingVertical: 2,
     alignItems: 'flex-start',
   },
   freeTimePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(28, 28, 30, 0.04)', // Very subtle grey
+    backgroundColor: 'rgba(28, 28, 30, 0.04)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
