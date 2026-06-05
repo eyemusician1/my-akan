@@ -35,11 +35,21 @@ const getDayLabel = (days: string[]) => {
 
 const timeToDecimal = (timeStr: string) => {
   if (!timeStr) return 0;
-  const [time, period] = timeStr.split(' ');
-  let [hours, minutes] = time.split(':').map(Number);
-  if (period === 'PM' && hours !== 12) hours += 12;
-  if (period === 'AM' && hours === 12) hours = 0;
-  return hours + (minutes / 60);
+  try {
+    const parts = timeStr.trim().split(' ');
+    const time = parts[0];
+    const period = parts[1] || 'AM';
+
+    let [hours, minutes] = time.split(':').map(Number);
+    if (isNaN(hours) || isNaN(minutes)) return 0;
+
+    if (period.toUpperCase() === 'PM' && hours !== 12) hours += 12;
+    if (period.toUpperCase() === 'AM' && hours === 12) hours = 0;
+
+    return hours + (minutes / 60);
+  } catch (e) {
+    return 0;
+  }
 };
 
 const formatHour = (hour: number) => {
@@ -110,7 +120,6 @@ const ExpandableEventCard = ({ item, onDelete }: { item: any, onDelete: () => vo
               <TouchableOpacity style={styles.actionBtn} onPress={handleEdit} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <MaterialIcon name="edit" size={18} color={palette.muted} />
               </TouchableOpacity>
-              {/* TRIGGER CUSTOM MODAL ON DELETE */}
               <TouchableOpacity style={styles.actionBtn} onPress={onDelete} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <MaterialIcon name="delete-outline" size={18} color={palette.muted} />
               </TouchableOpacity>
@@ -163,7 +172,6 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
     .filter(item => item.days.includes(activeDay))
     .sort((a, b) => a.startTime - b.startTime);
 
-  // --- SMART CASCADING DELETE LOGIC ---
   const confirmDelete = async () => {
     if (!itemToDelete) return;
 
@@ -171,14 +179,11 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
       await database.write(async () => {
         const subjectModel = itemToDelete.rawModel;
         const parentSchedule = await subjectModel.schedule.fetch();
-
-        // Count siblings BEFORE deletion
-        const siblings = await parentSchedule.subjects.fetch();
+        const countBefore = await parentSchedule.subjects.fetchCount();
 
         await subjectModel.destroyPermanently();
 
-        // If this was the only subject, destroy the parent schedule as well
-        if (siblings.length <= 1) {
+        if (countBefore <= 1) {
           await parentSchedule.destroyPermanently();
         }
       });
@@ -310,8 +315,8 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
               {liveSchedule
                 .filter(item => item.days.includes(day))
                 .map(item => {
-                  const topPosition = (item.startTime - START_HOUR) * HOUR_HEIGHT;
-                  const cardHeight = (item.endTime - item.startTime) * HOUR_HEIGHT;
+                  const topPosition = Math.max(0, (item.startTime - START_HOUR) * HOUR_HEIGHT);
+                  const cardHeight = Math.max(20, (item.endTime - item.startTime) * HOUR_HEIGHT);
 
                   return (
                     <TouchableOpacity
@@ -365,7 +370,6 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
 
       {viewMode === 'agenda' ? renderAgenda() : renderWeek()}
 
-      {/* --- CUSTOM DELETE CONFIRMATION MODAL --- */}
       <Modal visible={!!itemToDelete} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -438,7 +442,6 @@ const styles = StyleSheet.create({
   freeTimePill: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(28, 28, 30, 0.04)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
   freeTimeText: { fontSize: 12, fontWeight: '600', color: palette.muted, marginLeft: 6 },
 
-  /* --- CUSTOM MODAL STYLES --- */
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.4)', justifyContent: 'center', alignItems: 'center', padding: spacing.xl },
   modalContent: { width: '100%', backgroundColor: palette.surface, borderRadius: 28, padding: spacing.xl, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 10 },
   modalIconContainer: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(122, 28, 28, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: spacing.md },
@@ -461,7 +464,22 @@ const styles = StyleSheet.create({
   dayHeaderText: { fontSize: 12, fontWeight: '600', color: palette.ink },
   dayGridArea: { position: 'relative', height: HOURS.length * HOUR_HEIGHT },
   gridLine: { height: HOUR_HEIGHT, borderTopWidth: 1, borderColor: 'rgba(0,0,0,0.05)' },
-  gridEventCard: { position: 'absolute', left: 1, right: 1, borderRadius: 6, padding: 3, borderLeftWidth: 2, borderLeftColor: 'rgba(0,0,0,0.1)', overflow: 'hidden' },
-  gridEventTitle: { fontSize: 10, lineHeight: 12, fontWeight: '700', marginBottom: 2 },
-  gridEventTime: { fontSize: 9, lineHeight: 11, fontWeight: '600', opacity: 0.8 },
+
+  /* --- FIX: Shadow strictly removed --- */
+  gridEventCard: {
+    position: 'absolute',
+    width: '96%',
+    left: '2%',
+    borderRadius: 4,
+    paddingVertical: 2,
+    paddingHorizontal: 2,
+    paddingLeft: 4,
+    borderLeftWidth: 2,
+    borderLeftColor: 'rgba(0,0,0,0.15)',
+    overflow: 'hidden',
+    zIndex: 10,
+    // Note: No elevation property is present here, making it completely flat
+  },
+  gridEventTitle: { fontSize: 9.5, lineHeight: 11, fontWeight: '700', marginBottom: 1 },
+  gridEventTime: { fontSize: 8.5, lineHeight: 10, fontWeight: '600', opacity: 0.8 },
 });

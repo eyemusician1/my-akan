@@ -1,14 +1,18 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   Image,
   Pressable,
-  Animated
+  Animated,
+  TouchableOpacity,
+  TouchableWithoutFeedback
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import withObservables from '@nozbe/with-observables';
 import { Q } from '@nozbe/watermelondb';
 
@@ -16,8 +20,8 @@ import { palette, spacing } from '../tokens';
 import { ScheduleView } from '../features/schedule/components/ScheduleView';
 import { database } from '../core/database';
 import Schedule from '../core/database/models/Schedule';
+import Subject from '../core/database/models/Subject';
 
-// --- TIME FORMATTING HELPER ---
 const getTimeAgo = (date: Date) => {
   if (!date) return 'Just now';
   const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
@@ -25,14 +29,14 @@ const getTimeAgo = (date: Date) => {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hrs ago`;
+  if (hours < 24) return `${hours} hr(s) ago`;
   const days = Math.floor(hours / 24);
   return `${days} days ago`;
 };
 
-// --- REACTIVE CARD COMPONENT ---
-const ScheduleCardItemUI = ({ schedule, subjectCount }: { schedule: Schedule, subjectCount: number }) => {
-  // REDESIGNED: Borderless empty state when subjects are removed completely
+const ScheduleCardItemUI = ({ schedule, subjects }: { schedule: Schedule, subjects: Subject[] }) => {
+  const subjectCount = subjects.length;
+
   if (subjectCount === 0) {
     return (
       <View style={styles.emptyState}>
@@ -44,7 +48,7 @@ const ScheduleCardItemUI = ({ schedule, subjectCount }: { schedule: Schedule, su
   }
 
   return (
-    <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
+    <Pressable style={({ pressed }: { pressed: boolean }) => [styles.card, pressed && styles.cardPressed]}>
       <View style={styles.cardIconBox}>
         <MaterialIcon name="event-note" size={28} color={palette.secondary} />
       </View>
@@ -60,13 +64,12 @@ const ScheduleCardItemUI = ({ schedule, subjectCount }: { schedule: Schedule, su
 
 const EnhancedScheduleCardItem = withObservables(['schedule'], ({ schedule }: { schedule: Schedule }) => ({
   schedule: schedule.observe(),
-  subjectCount: schedule.subjects.observeCount(),
+  subjects: schedule.subjects.observe(),
 }))(ScheduleCardItemUI);
 
 const RecentScheduleListUI = ({ schedules }: { schedules: Schedule[] }) => {
   const latestSchedule = schedules[0];
 
-  // REDESIGNED: Clean, subtle, and borderless initial empty state matching the schedules view
   if (!latestSchedule) {
     return (
       <View style={styles.emptyState}>
@@ -81,7 +84,7 @@ const RecentScheduleListUI = ({ schedules }: { schedules: Schedule[] }) => {
 };
 
 const RecentScheduleWrapper = withObservables([], () => ({
-  schedules: database.collections.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).observe(),
+  schedules: database.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).observe(),
 }))(RecentScheduleListUI);
 
 
@@ -89,48 +92,82 @@ export function HomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const [activeFilter, setActiveFilter] = useState('Recent');
   const [isFabOpen, setIsFabOpen] = useState(false);
+  const [userName, setUserName] = useState('');
+
   const filters = ['Recent', 'Schedules', 'Payments', 'Archived'];
 
   const scrollY = useRef(new Animated.Value(0)).current;
   const clampedScrollY = Animated.diffClamp(scrollY, 0, 100);
 
-  const fabTranslateY = clampedScrollY.interpolate({
+  const fabScrollTranslateY = clampedScrollY.interpolate({
     inputRange: [0, 100],
     outputRange: [0, 130],
     extrapolate: 'clamp',
   });
 
-  const fabOpacity = clampedScrollY.interpolate({
+  const fabScrollOpacity = clampedScrollY.interpolate({
     inputRange: [0, 80],
     outputRange: [1, 0],
     extrapolate: 'clamp',
   });
 
+  const fabAnimation = useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
-    const cleanupEmptySchedules = async () => {
-      try {
-        const schedules = await database.collections.get<Schedule>('schedules').query().fetch();
-        const emptySchedules: Schedule[] = [];
+    Animated.spring(fabAnimation, {
+      toValue: isFabOpen ? 1 : 0,
+      useNativeDriver: true,
+      friction: 6,
+      tension: 50,
+    }).start();
+  }, [isFabOpen]);
 
-        for (const sch of schedules) {
-          const count = await sch.subjects.fetchCount();
-          if (count === 0) emptySchedules.push(sch);
+  const item1TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [20, 0] });
+  const item2TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [40, 0] });
+  const item3TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [60, 0] });
+  const itemScale = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1] });
+
+  const fabRotate = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '45deg'] });
+
+  useFocusEffect(
+    useCallback(() => {
+      const fetchUserName = async () => {
+        try {
+          const storedName = await AsyncStorage.getItem('@user_name');
+          if (storedName) {
+            setUserName(storedName);
+          }
+        } catch (e) {
+          console.error("Failed to load user name", e);
         }
+      };
 
-        if (emptySchedules.length > 0) {
-          await database.write(async () => {
-            for (const sch of emptySchedules) {
-              await sch.destroyPermanently();
-            }
-          });
+      const cleanupEmptySchedules = async () => {
+        try {
+          const schedules = await database.get<Schedule>('schedules').query().fetch();
+          const emptySchedules: Schedule[] = [];
+
+          for (const sch of schedules) {
+            const count = await sch.subjects.fetchCount();
+            if (count === 0) emptySchedules.push(sch);
+          }
+
+          if (emptySchedules.length > 0) {
+            await database.write(async () => {
+              for (const sch of emptySchedules) {
+                await sch.destroyPermanently();
+              }
+            });
+          }
+        } catch (error) {
+          console.error("Cleanup failed", error);
         }
-      } catch (error) {
-        console.error("Cleanup failed", error);
-      }
-    };
+      };
 
-    cleanupEmptySchedules();
-  }, [activeFilter]);
+      fetchUserName();
+      cleanupEmptySchedules();
+    }, [])
+  );
 
   return (
     <View style={styles.container}>
@@ -144,9 +181,18 @@ export function HomeScreen({ navigation }: any) {
           />
           <Text style={styles.headerTitle}>Trakn</Text>
         </View>
-        <View style={styles.avatar}>
-          <MaterialIcon name="person" size={20} color={palette.surface} />
-        </View>
+
+        <TouchableOpacity
+          style={styles.avatar}
+          activeOpacity={0.8}
+          onPress={() => navigation.navigate('Profile')}
+        >
+          {userName ? (
+            <Text style={styles.avatarInitial}>{userName.charAt(0).toUpperCase()}</Text>
+          ) : (
+            <MaterialIcon name="person" size={20} color={palette.surface} />
+          )}
+        </TouchableOpacity>
       </View>
 
       <View style={styles.filterContainer}>
@@ -158,7 +204,7 @@ export function HomeScreen({ navigation }: any) {
           {filters.map((filter) => (
             <Pressable
               key={filter}
-              style={({ pressed }) => [
+              style={({ pressed }: { pressed: boolean }) => [
                 styles.filterChip,
                 activeFilter === filter && styles.filterChipActive,
                 pressed && styles.pressedState
@@ -186,77 +232,78 @@ export function HomeScreen({ navigation }: any) {
         {activeFilter === 'Schedules' && <ScheduleView />}
       </Animated.ScrollView>
 
-      {isFabOpen && (
-        <Pressable
-          style={styles.dimOverlay}
-          onPress={() => setIsFabOpen(false)}
-        />
-      )}
+      <Animated.View
+        style={[styles.dimOverlay, { opacity: fabAnimation }]}
+        pointerEvents={isFabOpen ? 'auto' : 'none'}
+      >
+        <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setIsFabOpen(false)} />
+      </Animated.View>
 
       <Animated.View
         style={[
-          styles.bottomWrapper,
+          styles.fabContainer,
           {
-            paddingBottom: insets.bottom + spacing.xl,
-            opacity: isFabOpen ? 1 : fabOpacity,
-            transform: [{ translateY: isFabOpen ? 0 : fabTranslateY }]
+            bottom: insets.bottom + spacing.xl,
+            opacity: isFabOpen ? 1 : fabScrollOpacity,
+            transform: [{ translateY: isFabOpen ? 0 : fabScrollTranslateY }]
           }
         ]}
       >
-        {isFabOpen && (
-          <View style={styles.fabMenuContainer}>
-            <View style={styles.fabMenu}>
-              <Pressable style={({ pressed }) => [styles.fabMenuItem, pressed && styles.pressedState]}>
-                <MaterialIcon name="crop-free" size={22} color={palette.ink} />
-                <Text style={styles.fabMenuText}>Scan COR (Camera)</Text>
-              </Pressable>
-              <Pressable style={({ pressed }) => [styles.fabMenuItem, pressed && styles.pressedState]}>
-                <MaterialIcon name="image" size={22} color={palette.ink} />
-                <Text style={styles.fabMenuText}>Upload Image</Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [styles.fabMenuItem, pressed && styles.pressedState]}
-                onPress={() => {
-                  setIsFabOpen(false);
-                  navigation.navigate('ManualEntry');
-                }}
-              >
-                <MaterialIcon name="edit" size={22} color={palette.ink} />
-                <Text style={styles.fabMenuText}>Manual Entry</Text>
-              </Pressable>
-            </View>
-          </View>
-        )}
+        <View style={styles.fabMenuContainer} pointerEvents={isFabOpen ? 'auto' : 'none'}>
 
-        <View style={styles.fabRow}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.fabCamera,
-              pressed && styles.fabPressed
-            ]}
-          >
-            <MaterialIcon name="photo-camera" size={26} color={palette.ink} />
-          </Pressable>
+          {/* SCAN COR (CAMERA) */}
+          <Animated.View style={{ opacity: fabAnimation, transform: [{ translateY: item3TranslateY }, { scale: itemScale }] }}>
+            <TouchableOpacity
+              style={styles.fabPill}
+              activeOpacity={0.8}
+              onPress={() => {
+                setIsFabOpen(false); // Close the FAB menu
+                navigation.navigate('Scanner', { mode: 'camera' }); // Open Camera
+              }}
+            >
+              <MaterialIcon name="crop-free" size={20} color={palette.ink} />
+              <Text style={styles.fabPillText}>Scan COR (Camera)</Text>
+            </TouchableOpacity>
+          </Animated.View>
 
-          <Pressable
-            onPress={() => setIsFabOpen(!isFabOpen)}
-            style={({ pressed }) => [
-              styles.fabCreate,
-              isFabOpen && styles.fabCreateActive,
-              pressed && styles.fabPressed
-            ]}
-          >
-            <MaterialIcon
-              name={isFabOpen ? "close" : "add"}
-              size={24}
-              color={isFabOpen ? palette.primary : palette.surface}
-              style={styles.fabCreateIcon}
-            />
-            <Text style={[styles.fabCreateText, isFabOpen && styles.fabCreateTextActive]}>
-              {isFabOpen ? "Cancel" : "Create New"}
-            </Text>
-          </Pressable>
+          {/* UPLOAD IMAGE (GALLERY) */}
+          <Animated.View style={{ opacity: fabAnimation, transform: [{ translateY: item2TranslateY }, { scale: itemScale }] }}>
+            <TouchableOpacity
+              style={styles.fabPill}
+              activeOpacity={0.8}
+              onPress={() => {
+                setIsFabOpen(false); // Close the FAB menu
+                navigation.navigate('Scanner', { mode: 'gallery' }); // Open Gallery
+              }}
+            >
+              <MaterialIcon name="image" size={20} color={palette.ink} />
+              <Text style={styles.fabPillText}>Upload Image</Text>
+            </TouchableOpacity>
+          </Animated.View>
+
+          {/* MANUAL ENTRY */}
+          <Animated.View style={{ opacity: fabAnimation, transform: [{ translateY: item1TranslateY }, { scale: itemScale }] }}>
+            <TouchableOpacity
+              style={styles.fabPill}
+              activeOpacity={0.8}
+              onPress={() => {
+                setIsFabOpen(false);
+                navigation.navigate('ManualEntry');
+              }}
+            >
+              <MaterialIcon name="edit" size={20} color={palette.ink} />
+              <Text style={styles.fabPillText}>Manual Entry</Text>
+            </TouchableOpacity>
+          </Animated.View>
+
         </View>
+
+        <TouchableWithoutFeedback onPress={() => setIsFabOpen(!isFabOpen)}>
+          <Animated.View style={[styles.mainFab, { transform: [{ rotate: fabRotate }] }]}>
+            <MaterialIcon name="add" size={32} color={palette.surface} />
+          </Animated.View>
+        </TouchableWithoutFeedback>
+
       </Animated.View>
 
     </View>
@@ -270,6 +317,7 @@ const styles = StyleSheet.create({
   logo: { width: 28, height: 28, marginRight: spacing.sm },
   headerTitle: { fontSize: 22, fontWeight: '700', color: palette.ink, letterSpacing: -0.5 },
   avatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: palette.primary, justifyContent: 'center', alignItems: 'center' },
+  avatarInitial: { fontSize: 18, fontWeight: '700', color: palette.surface },
 
   filterContainer: { height: 50 },
   filterScroll: { paddingHorizontal: spacing.xl, alignItems: 'center', gap: spacing.sm },
@@ -318,11 +366,8 @@ const styles = StyleSheet.create({
     fontWeight: '500'
   },
 
-  pressedState: {
-    opacity: 0.7,
-  },
+  pressedState: { opacity: 0.7 },
 
-  /* --- NEW SUBTLE BORDERLESS EMPTY STATE STYLES --- */
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -343,58 +388,50 @@ const styles = StyleSheet.create({
     opacity: 0.8
   },
 
-  dimOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(251, 251, 253, 0.9)', zIndex: 10 },
-
-  bottomWrapper: { position: 'absolute', bottom: 0, width: '100%', alignItems: 'center', zIndex: 20 },
-  fabMenuContainer: { width: '100%', alignItems: 'center', paddingLeft: 64, marginBottom: spacing.md },
-  fabMenu: { backgroundColor: palette.surface, width: 220, borderRadius: 20, paddingVertical: spacing.sm, shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.12, shadowRadius: 24, elevation: 8, borderWidth: 1, borderColor: palette.border },
-  fabMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.lg },
-  fabMenuText: { fontSize: 16, fontWeight: '600', color: palette.ink, marginLeft: spacing.md },
-
-  fabRow: { flexDirection: 'row', justifyContent: 'center', gap: spacing.sm },
-
-  fabCamera: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: palette.surface,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 4,
-    borderWidth: 1,
-    borderColor: palette.border
+  dimOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(250, 246, 239, 0.92)',
+    zIndex: 10
   },
-  fabCreate: {
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: palette.primary,
+
+  fabContainer: {
+    position: 'absolute',
+    right: spacing.xl,
+    alignItems: 'flex-end',
+    zIndex: 20
+  },
+  fabMenuContainer: {
+    alignItems: 'flex-end',
+    marginBottom: spacing.md,
+    gap: 12
+  },
+  fabPill: {
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 28,
-    shadowColor: palette.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 20,
-    elevation: 6
-  },
-  fabCreateActive: {
     backgroundColor: palette.surface,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 24,
     borderWidth: 1,
     borderColor: palette.border,
-    shadowOpacity: 0,
-    elevation: 0
   },
-  fabCreateIcon: { marginRight: spacing.xs },
-  fabCreateText: { color: palette.surface, fontSize: 17, fontWeight: '700' },
-  fabCreateTextActive: { color: palette.primary },
-
-  fabPressed: {
-    transform: [{ scale: 0.95 }],
-    opacity: 0.9,
+  fabPillText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: palette.ink,
+    marginLeft: spacing.sm,
   },
+  mainFab: {
+    width: 66,
+    height: 66,
+    borderRadius: 22,
+    backgroundColor: palette.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 6,
+    shadowColor: palette.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+  }
 });
