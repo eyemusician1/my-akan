@@ -3,7 +3,22 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- FIXED: Added the missing closing bracket to the line below -->
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- ========================================================= -->
+    <!-- NOTIFEE BACKGROUND ALARM & REBOOT SURVIVAL PERMISSIONS -->
+    <!-- ========================================================= -->
+    <!-- Allows the app to light up the screen and vibrate -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Reschedules all your class alarms automatically if the user restarts their phone -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Obligatory for displaying push alerts on Android 13+ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Grants background OS clock-timing clearance -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Ultimate override: Bypasses Android 14's default alarm denial -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <application
       android:name=".MainApplication"

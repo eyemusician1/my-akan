@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,11 +8,12 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  TouchableWithoutFeedback,
   Keyboard,
   LayoutAnimation,
   UIManager,
-  Modal
+  Modal,
+  Animated,
+  DeviceEventEmitter
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,6 +23,7 @@ import { palette, spacing } from '../tokens';
 import { database } from '../core/database';
 import Schedule from '../core/database/models/Schedule';
 import Subject from '../core/database/models/Subject';
+import { NotificationService } from '../core/notifications/NotificationService';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -51,14 +53,14 @@ export function ManualEntryScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
 
   const editSubjectId = route?.params?.editSubjectId;
+  const extractedSemester = route?.params?.extractedSemester;
 
-  // --- SCANNER QUEUE STATE ---
   const initialQueue = route?.params?.extractedSubjects || [];
   const [reviewQueue, setReviewQueue] = useState<any[]>(initialQueue);
   const totalScanned = useRef(initialQueue.length).current;
 
-  const [semester, setSemester] = useState('1st Sem');
-  const [totalSubjects, setTotalSubjects] = useState('');
+  const [semester, setSemester] = useState(extractedSemester || '1st Sem');
+  const [declaredTotalUnits, setDeclaredTotalUnits] = useState('');
 
   const [addedCount, setAddedCount] = useState(0);
   const [totalAddedUnits, setTotalAddedUnits] = useState(0);
@@ -82,16 +84,104 @@ export function ManualEntryScreen({ navigation, route }: any) {
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
   const closeAlert = () => setCustomAlert(prev => ({ ...prev, visible: false }));
 
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
+  // Field Refs for auto-advancing
+  const sectionRef = useRef<TextInput>(null);
+  const titleRef = useRef<TextInput>(null);
+  const roomRef = useRef<TextInput>(null);
+  const instructorRef = useRef<TextInput>(null);
+  const endTimeRef = useRef<TextInput>(null);
+
+  // Local Animated Toast
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+  const toastTranslateY = useRef(new Animated.Value(15)).current;
+  const toastTimerRef = useRef<any>(null);
+
+  const showLocalToast = useCallback((msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToastMessage(msg);
+    toastOpacity.setValue(0);
+    toastTranslateY.setValue(15);
+
+    Animated.parallel([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.spring(toastTranslateY, { toValue: 0, useNativeDriver: true, speed: 12 }),
+    ]).start();
+
+    toastTimerRef.current = setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(toastOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+        Animated.timing(toastTranslateY, { toValue: 15, duration: 200, useNativeDriver: true }),
+      ]).start(() => setToastMessage(null));
+    }, 2500);
+  }, []);
+
   const maxUnits = semester === 'Summer' ? 6 : 24;
 
-  const isOverload = editSubjectId
+  const handleDeclaredUnitsChange = (text: string) => {
+    let cleaned = text.replace(/[^0-9]/g, '');
+    const parsed = parseInt(cleaned, 10);
+
+    if (!isNaN(parsed) && parsed > maxUnits) {
+      showLocalToast(`Maximum allowed for ${semester} is ${maxUnits} units`);
+      cleaned = maxUnits.toString();
+    }
+    setDeclaredTotalUnits(cleaned);
+  };
+
+  const handleTermChange = (term: string) => {
+    Keyboard.dismiss();
+    if (term !== semester) {
+      setSemester(term);
+      const newMax = term === 'Summer' ? 6 : 24;
+      const currentDeclared = parseInt(declaredTotalUnits, 10);
+
+      if (!isNaN(currentDeclared) && currentDeclared > newMax) {
+        setDeclaredTotalUnits(newMax.toString());
+        showLocalToast(`Units capped to ${newMax} max for ${term}`);
+      }
+    }
+  };
+
+  const declaredLimitNum = parseInt(declaredTotalUnits, 10);
+
+  const isDeclaredUnitLimitReached =
+    reviewQueue.length === 0 &&
+    !editSubjectId &&
+    !isNaN(declaredLimitNum) &&
+    totalAddedUnits >= declaredLimitNum;
+
+  const isSystemOverload = editSubjectId
     ? (totalAddedUnits - originalUnits + units) > maxUnits
     : (totalAddedUnits + units) > maxUnits;
 
-  const parsedLimit = parseInt(totalSubjects, 10);
-  const isSubjectLimitReached = !editSubjectId && !isNaN(parsedLimit) && addedCount >= parsedLimit;
+  const isDeclaredOverload = !editSubjectId && !isNaN(declaredLimitNum)
+    ? (totalAddedUnits + units) > declaredLimitNum
+    : false;
 
-  // --- POPULATE FROM QUEUE OR EDIT ---
+  const hasUnitError = isSystemOverload || isDeclaredOverload;
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const showSubscription = Keyboard.addListener(showEvent, () => setIsKeyboardVisible(true));
+    const hideSubscription = Keyboard.addListener(hideEvent, () => setIsKeyboardVisible(false));
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (reviewQueue.length > 0 && extractedSemester) {
+      setSemester(extractedSemester);
+    }
+  }, [reviewQueue, extractedSemester]);
+
   useEffect(() => {
     if (editSubjectId) {
       const loadSubject = async () => {
@@ -125,7 +215,6 @@ export function ManualEntryScreen({ navigation, route }: any) {
       };
       loadSubject();
     } else if (reviewQueue.length > 0) {
-      // PRE-FILL FROM SCANNER QUEUE
       const current = reviewQueue[0];
       setCode(current.code || '');
       setSection(current.section || '');
@@ -158,7 +247,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
   }, [editSubjectId, reviewQueue]);
 
   useEffect(() => {
-    if (editSubjectId) return;
+    if (editSubjectId || reviewQueue.length > 0) return;
 
     const initRecentTerm = async () => {
       const recent = await database.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).fetch();
@@ -167,7 +256,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
       }
     };
     initRecentTerm();
-  }, [editSubjectId]);
+  }, [editSubjectId, reviewQueue]);
 
   useEffect(() => {
     if (editSubjectId) return;
@@ -178,15 +267,15 @@ export function ManualEntryScreen({ navigation, route }: any) {
         const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
         if (schedules.length > 0 && isMounted) {
           const sch = schedules[0];
-          const subjects = await sch.subjects.fetch();
+          const fetchedSubjects = await sch.subjects.fetch();
 
-          setTotalSubjects(sch.totalSubjects ? sch.totalSubjects.toString() : '');
-          setAddedCount(subjects.length);
+          setDeclaredTotalUnits(sch.totalSubjects ? sch.totalSubjects.toString() : '');
+          setAddedCount(fetchedSubjects.length);
 
-          const totalU = subjects.reduce((sum: number, s: Subject) => sum + s.units, 0);
+          const totalU = fetchedSubjects.reduce((sum: number, s: Subject) => sum + s.units, 0);
           setTotalAddedUnits(totalU);
         } else if (isMounted) {
-          setTotalSubjects('');
+          setDeclaredTotalUnits('');
           setAddedCount(0);
           setTotalAddedUnits(0);
         }
@@ -198,16 +287,6 @@ export function ManualEntryScreen({ navigation, route }: any) {
     loadTermData();
     return () => { isMounted = false; };
   }, [semester, editSubjectId]);
-
-  const handleTermChange = (term: string) => {
-    Keyboard.dismiss();
-    if (term !== semester) setSemester(term);
-  };
-
-  const handleTotalSubjectsChange = (text: string) => {
-    let cleaned = text.replace(/[^0-9]/g, '');
-    setTotalSubjects(cleaned);
-  };
 
   const toggleDay = (dayValue: string) => {
     Keyboard.dismiss();
@@ -247,24 +326,23 @@ export function ManualEntryScreen({ navigation, route }: any) {
     return cleaned;
   };
 
-  // FIXED: If we are reviewing a scan queue, totalSubjects is bypassed so the button lights up!
   const isFormValid =
-    (editSubjectId || reviewQueue.length > 0 ? true : totalSubjects.trim().length > 0) &&
+    (editSubjectId || reviewQueue.length > 0 ? true : declaredTotalUnits.trim().length > 0) &&
     code.trim().length > 0 &&
-    section.trim().length > 0 &&
     title.trim().length > 0 &&
     room.trim().length > 0 &&
     instructor.trim().length > 0 &&
     selectedDays.length > 0 &&
     startTime.length === 5 &&
     endTime.length === 5 &&
-    !isOverload &&
-    !isSubjectLimitReached;
+    !hasUnitError &&
+    !isDeclaredUnitLimitReached;
 
+  const newTotalAfterSave = totalAddedUnits + units;
   const canAddAnother =
     isFormValid &&
-    (totalAddedUnits + units < maxUnits) &&
-    (addedCount + 1 < parsedLimit || isNaN(parsedLimit));
+    (newTotalAfterSave < maxUnits) &&
+    (isNaN(declaredLimitNum) || newTotalAfterSave < declaredLimitNum);
 
   const checkTimeConflict = async () => {
     const newStart = timeToDecimal(startTime, startAmPm);
@@ -278,9 +356,9 @@ export function ManualEntryScreen({ navigation, route }: any) {
     const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
     if (schedules.length === 0) return false;
 
-    const subjects = await schedules[0].subjects.fetch();
+    const fetchedSubjects = await schedules[0].subjects.fetch();
 
-    for (const subj of subjects) {
+    for (const subj of fetchedSubjects) {
       if (editSubjectId && subj.id === editSubjectId) continue;
 
       const hasSharedDays = selectedDays.some(d => subj.days.includes(d));
@@ -305,53 +383,65 @@ export function ManualEntryScreen({ navigation, route }: any) {
   };
 
   const saveToDatabase = async () => {
-    await database.write(async () => {
-      const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
-      let currentSchedule = schedules[0];
+    try {
+      await database.write(async () => {
+        const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
+        let currentSchedule = schedules[0];
 
-      if (!currentSchedule) {
-        currentSchedule = await database.get<Schedule>('schedules').create((sch: any) => {
+        if (!currentSchedule) {
+          currentSchedule = await database.get<Schedule>('schedules').create((sch: any) => {
             sch.academicTerm = semester;
-            if (totalSubjects) sch.totalSubjects = parseInt(totalSubjects, 10);
+            if (declaredTotalUnits) sch.totalSubjects = parseInt(declaredTotalUnits, 10);
           });
-      }
-
-      if (editSubjectId) {
-        const subjectToUpdate = await database.get<Subject>('subjects').find(editSubjectId);
-        const oldSchedule = await subjectToUpdate.schedule.fetch();
-
-        await subjectToUpdate.update((subj: any) => {
-          subj.schedule.set(currentSchedule);
-          subj.code = code;
-          subj.section = section;
-          subj.title = title;
-          subj.units = units;
-          subj.room = room;
-          subj.instructor = instructor;
-          subj.days = selectedDays;
-          subj.startTime = `${startTime} ${startAmPm}`;
-          subj.endTime = `${endTime} ${endAmPm}`;
-        });
-
-        if (oldSchedule.id !== currentSchedule.id) {
-          const count = await oldSchedule.subjects.fetchCount();
-          if (count === 0) await oldSchedule.destroyPermanently();
         }
-      } else {
-        await database.get<Subject>('subjects').create((subj: any) => {
-          subj.schedule.set(currentSchedule);
-          subj.code = code;
-          subj.section = section;
-          subj.title = title;
-          subj.units = units;
-          subj.room = room;
-          subj.instructor = instructor;
-          subj.days = selectedDays;
-          subj.startTime = `${startTime} ${startAmPm}`;
-          subj.endTime = `${endTime} ${endAmPm}`;
+
+        if (editSubjectId) {
+          const subjectToUpdate = await database.get<Subject>('subjects').find(editSubjectId);
+          const oldSchedule = await subjectToUpdate.schedule.fetch();
+
+          await subjectToUpdate.update((subj: any) => {
+            subj.schedule.set(currentSchedule);
+            subj.code = code;
+            subj.section = section;
+            subj.title = title;
+            subj.units = units;
+            subj.room = room;
+            subj.instructor = instructor;
+            subj.days = selectedDays;
+            subj.startTime = `${startTime} ${startAmPm}`;
+            subj.endTime = `${endTime} ${endAmPm}`;
+          });
+
+          if (oldSchedule.id !== currentSchedule.id) {
+            const count = await oldSchedule.subjects.fetchCount();
+            if (count === 0) await oldSchedule.destroyPermanently();
+          }
+        } else {
+          await database.get<Subject>('subjects').create((subj: any) => {
+            subj.schedule.set(currentSchedule);
+            subj.code = code;
+            subj.section = section;
+            subj.title = title;
+            subj.units = units;
+            subj.room = room;
+            subj.instructor = instructor;
+            subj.days = selectedDays;
+            subj.startTime = `${startTime} ${startAmPm}`;
+            subj.endTime = `${endTime} ${endAmPm}`;
+          });
+        }
+
+        await currentSchedule.update((sch: any) => {
+          sch.academicTerm = semester;
+          if (declaredTotalUnits) sch.totalSubjects = parseInt(declaredTotalUnits, 10);
         });
-      }
-    });
+
+        const allEnrolledSubjects = await currentSchedule.subjects.fetch();
+        await NotificationService.syncScheduleAlarms(allEnrolledSubjects);
+      });
+    } catch (dbError) {
+      console.log('WatermelonDB commit note:', dbError);
+    }
   };
 
   const handleSaveAndAddAnother = async () => {
@@ -360,6 +450,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
     if (hasConflict) return;
 
     await saveToDatabase();
+    showLocalToast('Subject added');
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
     setAddedCount(prev => prev + 1);
@@ -387,8 +478,25 @@ export function ManualEntryScreen({ navigation, route }: any) {
     const hasConflict = await checkTimeConflict();
     if (hasConflict) return;
 
-    await saveToDatabase();
-    navigation.goBack();
+    try {
+      await saveToDatabase(); // <-- SQLite transaction finishes completely here!
+
+      // 1. NOW we fetch from disk, guaranteeing the new subject is inside the array
+      const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
+      if (schedules[0]) {
+        const securelySavedSubjects = await schedules[0].subjects.fetch();
+
+        console.log(`[NOTIFEE] Queuing alarms for ${securelySavedSubjects.length} subjects...`);
+        await NotificationService.syncScheduleAlarms(securelySavedSubjects);
+      }
+
+      DeviceEventEmitter.emit('SHOW_TOAST', editSubjectId ? 'Subject updated' : 'Schedule saved');
+      setTimeout(() => { navigation.goBack(); }, 50);
+
+    } catch (error) {
+      console.error("Save & Finish DB Error:", error);
+      setCustomAlert({ visible: true, title: "Save failed", message: "Could not commit changes." });
+    }
   };
 
   return (
@@ -397,241 +505,280 @@ export function ManualEntryScreen({ navigation, route }: any) {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 20}
     >
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-        <View style={styles.innerContainer}>
+      <View style={styles.innerContainer}>
 
-          <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
-            <TouchableOpacity style={styles.backButton} onPress={() => { Keyboard.dismiss(); navigation.goBack(); }}>
-              <MaterialIcon name="arrow-back" size={24} color={palette.ink} />
-            </TouchableOpacity>
-            <Text style={styles.headerTitle}>{editSubjectId ? 'Edit Subject' : reviewQueue.length > 0 ? 'Review Scans' : 'New Schedule'}</Text>
-            <View style={styles.headerRight} />
+        <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
+          <TouchableOpacity style={styles.backButton} onPress={() => { Keyboard.dismiss(); navigation.goBack(); }}>
+            <MaterialIcon name="arrow-back" size={24} color={palette.ink} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>{editSubjectId ? 'Edit Subject' : reviewQueue.length > 0 ? 'Review Scans' : 'New Schedule'}</Text>
+          <View style={styles.headerRight} />
+        </View>
+
+        {reviewQueue.length > 0 && !editSubjectId && (
+          <View style={styles.scannerBanner}>
+            <MaterialIcon name="document-scanner" size={18} color={palette.surface} />
+            <Text style={styles.scannerBannerText}>
+              Reviewing scanned subject {totalScanned - reviewQueue.length + 1} of {totalScanned}
+            </Text>
+          </View>
+        )}
+
+        {addedCount > 0 && !editSubjectId && reviewQueue.length === 0 && (
+          <View style={styles.progressBanner}>
+            <MaterialIcon name="check-circle" size={18} color={palette.surface} />
+            <Text style={styles.progressText}>
+              {addedCount} {addedCount === 1 ? 'subject' : 'subjects'} • {totalAddedUnits}/{declaredTotalUnits || maxUnits} Units Enrolled
+            </Text>
+          </View>
+        )}
+
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          showsVerticalScrollIndicator={false}
+        >
+
+          <View style={styles.section} pointerEvents={reviewQueue.length > 0 ? 'none' : 'auto'}>
+            <Text style={styles.sectionLabel}>Academic Term</Text>
+
+            <View style={[styles.termRow, reviewQueue.length > 0 && { opacity: 0.5 }]}>
+              {TERMS.map((term) => {
+                const isSelected = semester === term;
+                const isDisabled = addedCount > 0 && !isSelected;
+
+                return (
+                  <TouchableOpacity
+                    key={term}
+                    activeOpacity={0.7}
+                    disabled={isDisabled}
+                    onPress={() => handleTermChange(term)}
+                    style={[ styles.termPill, isSelected && styles.termPillActive, isDisabled && styles.termPillDisabled ]}
+                  >
+                    <Text style={[ styles.termPillText, isSelected && styles.termPillTextActive, isDisabled && styles.termTextDisabled ]}>
+                      {term}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {addedCount === 0 && !editSubjectId && reviewQueue.length === 0 && (
+              <View style={styles.totalSubjectsWrapper}>
+                <View>
+                  <Text style={styles.inputContextLabel}>Total Enrolled Units</Text>
+                  <Text style={styles.inputContextSub}>{maxUnits} max allowed</Text>
+                </View>
+
+                <TextInput
+                  style={styles.inputContext}
+                  placeholder="e.g. 18"
+                  placeholderTextColor={palette.muted}
+                  value={declaredTotalUnits}
+                  onChangeText={handleDeclaredUnitsChange}
+                  onSubmitEditing={() => Keyboard.dismiss()}
+                  keyboardType="number-pad"
+                  maxLength={2}
+                  returnKeyType="done"
+                />
+              </View>
+            )}
           </View>
 
-          {/* DYNAMIC BANNERS */}
-          {reviewQueue.length > 0 && !editSubjectId && (
-            <View style={styles.scannerBanner}>
-              <MaterialIcon name="document-scanner" size={18} color={palette.surface} />
-              <Text style={styles.scannerBannerText}>
-                Reviewing scanned subject {totalScanned - reviewQueue.length + 1} of {totalScanned}
-              </Text>
+          <View pointerEvents={isDeclaredUnitLimitReached ? 'none' : 'auto'} style={[isDeclaredUnitLimitReached && styles.disabledSection]}>
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Subject Details</Text>
+
+              <View style={styles.codeUnitRow}>
+                <TextInput
+                  style={[styles.input, styles.flex2, { marginBottom: 0 }]}
+                  placeholder="Subject Code"
+                  placeholderTextColor={palette.muted}
+                  value={code}
+                  onChangeText={setCode}
+                  onSubmitEditing={() => titleRef.current?.focus()}
+                  autoCapitalize="characters"
+                  returnKeyType="next"
+                />
+                <View style={styles.spacer} />
+
+                <TouchableOpacity style={[styles.unitDropdownToggle, hasUnitError && styles.unitDropdownError]} activeOpacity={0.7} onPress={toggleUnitsDropdown}>
+                  <Text style={[styles.unitDropdownText, hasUnitError && styles.textError]}>{units} Units</Text>
+                  <MaterialIcon name={isUnitsOpen ? "arrow-drop-up" : "arrow-drop-down"} size={24} color={hasUnitError ? '#d32f2f' : palette.ink} />
+                </TouchableOpacity>
+              </View>
+
+              {hasUnitError && (
+                <View style={styles.errorBanner}>
+                  <MaterialIcon name="error-outline" size={14} color="#d32f2f" />
+                  <Text style={styles.errorText}>
+                    {isSystemOverload
+                      ? `Exceeds ${maxUnits}-unit maximum for ${semester}.`
+                      : `Exceeds your declared target of ${declaredTotalUnits} units.`}
+                  </Text>
+                </View>
+              )}
+
+              {isUnitsOpen && (
+                <View style={styles.unitOptionsRow}>
+                  {UNITS.map(u => (
+                    <TouchableOpacity key={u} style={[styles.unitOptionPill, units === u && styles.unitOptionPillActive]} onPress={() => selectUnit(u)}>
+                      <Text style={[styles.unitOptionText, units === u && styles.unitOptionTextActive]}>{u}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              <TextInput
+                ref={sectionRef}
+                style={[styles.input, { marginTop: spacing.md }]}
+                placeholder="Section (e.g. Gg)"
+                placeholderTextColor={palette.muted}
+                value={section}
+                onChangeText={setSection}
+                onSubmitEditing={() => titleRef.current?.focus()}
+                maxLength={7}
+                autoCapitalize="characters"
+                returnKeyType="next"
+              />
+
+              <TextInput
+                ref={titleRef}
+                style={styles.input}
+                placeholder="Descriptive Title"
+                placeholderTextColor={palette.muted}
+                value={title}
+                onChangeText={setTitle}
+                onSubmitEditing={() => roomRef.current?.focus()}
+                returnKeyType="next"
+              />
             </View>
-          )}
 
-          {addedCount > 0 && !editSubjectId && reviewQueue.length === 0 && (
-            <View style={styles.progressBanner}>
-              <MaterialIcon name="check-circle" size={18} color={palette.surface} />
-              <Text style={styles.progressText}>
-                {addedCount} {totalSubjects ? `of ${totalSubjects}` : ''} subjects • {totalAddedUnits}/{maxUnits} Units
-              </Text>
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Logistics</Text>
+              <TextInput
+                ref={roomRef}
+                style={styles.input}
+                placeholder="Room / Location"
+                placeholderTextColor={palette.muted}
+                value={room}
+                onChangeText={setRoom}
+                onSubmitEditing={() => instructorRef.current?.focus()}
+                returnKeyType="next"
+              />
+              <TextInput
+                ref={instructorRef}
+                style={styles.input}
+                placeholder="Instructor Name"
+                placeholderTextColor={palette.muted}
+                value={instructor}
+                onChangeText={setInstructor}
+                onSubmitEditing={() => Keyboard.dismiss()}
+                returnKeyType="done"
+              />
             </View>
-          )}
 
-          <ScrollView
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag"
-          >
-
-            <View style={styles.section} pointerEvents={reviewQueue.length > 0 ? 'none' : 'auto'}>
-              <Text style={styles.sectionLabel}>Academic Term</Text>
-
-              <View style={[styles.termRow, reviewQueue.length > 0 && { opacity: 0.5 }]}>
-                {TERMS.map((term) => {
-                  const isSelected = semester === term;
-                  const isDisabled = addedCount > 0 && !isSelected;
-
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Class Days</Text>
+              <View style={styles.daysRow}>
+                {DAYS_OF_WEEK.map((day) => {
+                  const isSelected = selectedDays.includes(day.value);
                   return (
-                    <TouchableOpacity
-                      key={term}
-                      activeOpacity={0.7}
-                      disabled={isDisabled}
-                      onPress={() => handleTermChange(term)}
-                      style={[ styles.termPill, isSelected && styles.termPillActive, isDisabled && styles.termPillDisabled ]}
-                    >
-                      <Text style={[ styles.termPillText, isSelected && styles.termPillTextActive, isDisabled && styles.termTextDisabled ]}>
-                        {term}
-                      </Text>
+                    <TouchableOpacity key={day.value} activeOpacity={0.7} onPress={() => toggleDay(day.value)} style={[styles.dayPill, isSelected && styles.dayPillActive]}>
+                      <Text style={[styles.dayPillText, isSelected && styles.dayPillTextActive]}>{day.label}</Text>
                     </TouchableOpacity>
                   );
                 })}
               </View>
-
-              {addedCount === 0 && !editSubjectId && reviewQueue.length === 0 && (
-                <View style={styles.totalSubjectsWrapper}>
-                  <Text style={styles.inputContextLabel}>Total Enrolled Subjects</Text>
-                  <TextInput
-                    style={styles.inputContext}
-                    placeholder="e.g. 8"
-                    placeholderTextColor={palette.muted}
-                    value={totalSubjects}
-                    onChangeText={handleTotalSubjectsChange}
-                    keyboardType="number-pad"
-                    maxLength={2}
-                    returnKeyType="done"
-                  />
-                </View>
-              )}
             </View>
 
-            <View pointerEvents={isSubjectLimitReached ? 'none' : 'auto'} style={[isSubjectLimitReached && styles.disabledSection]}>
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Subject Details</Text>
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Time</Text>
 
-                <View style={styles.codeUnitRow}>
-                  <TextInput
-                    style={[styles.input, styles.flex2, { marginBottom: 0 }]}
-                    placeholder="Subject Code"
-                    placeholderTextColor={palette.muted}
-                    value={code}
-                    onChangeText={setCode}
-                    autoCapitalize="characters"
-                    returnKeyType="next"
-                  />
-                  <View style={styles.spacer} />
+              <View style={styles.timeRow}>
 
-                  <TouchableOpacity style={[styles.unitDropdownToggle, isOverload && styles.unitDropdownError]} activeOpacity={0.7} onPress={toggleUnitsDropdown}>
-                    <Text style={[styles.unitDropdownText, isOverload && styles.textError]}>{units} Units</Text>
-                    <MaterialIcon name={isUnitsOpen ? "arrow-drop-up" : "arrow-drop-down"} size={24} color={isOverload ? '#d32f2f' : palette.ink} />
-                  </TouchableOpacity>
+                <View style={styles.timeContainer}>
+                  <Text style={styles.timeLabel}>Starts</Text>
+                  <View style={styles.timeInputWrapper}>
+                    <TextInput
+                      style={styles.timeValueInput}
+                      value={startTime}
+                      onChangeText={(text) => {
+                        const formatted = formatTimeInput(text);
+                        setStartTime(formatted);
+                        if (formatted.length === 5) endTimeRef.current?.focus();
+                      }}
+                      onSubmitEditing={() => endTimeRef.current?.focus()}
+                      placeholder="08:30"
+                      placeholderTextColor={palette.muted}
+                      keyboardType="number-pad"
+                      maxLength={5}
+                      returnKeyType="next"
+                    />
+                    <TouchableOpacity style={styles.amPmToggle} onPress={() => setStartAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
+                      <Text style={styles.amPmText}>{startAmPm}</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
-                {isOverload && (
-                  <View style={styles.errorBanner}>
-                    <MaterialIcon name="error-outline" size={14} color="#d32f2f" />
-                    <Text style={styles.errorText}>Exceeds {maxUnits} unit maximum for {semester}.</Text>
-                  </View>
-                )}
-
-                {isUnitsOpen && (
-                  <View style={styles.unitOptionsRow}>
-                    {UNITS.map(u => (
-                      <TouchableOpacity key={u} style={[styles.unitOptionPill, units === u && styles.unitOptionPillActive]} onPress={() => selectUnit(u)}>
-                        <Text style={[styles.unitOptionText, units === u && styles.unitOptionTextActive]}>{u}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                <TextInput
-                  style={[styles.input, { marginTop: spacing.md }]}
-                  placeholder="Section (e.g. Gg)"
-                  placeholderTextColor={palette.muted}
-                  value={section}
-                  onChangeText={setSection}
-                  maxLength={7}
-                  autoCapitalize="characters"
-                  returnKeyType="next"
-                />
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Descriptive Title"
-                  placeholderTextColor={palette.muted}
-                  value={title}
-                  onChangeText={setTitle}
-                  returnKeyType="done"
-                />
-              </View>
-
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Logistics</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Room / Location"
-                  placeholderTextColor={palette.muted}
-                  value={room}
-                  onChangeText={setRoom}
-                  returnKeyType="next"
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Instructor Name"
-                  placeholderTextColor={palette.muted}
-                  value={instructor}
-                  onChangeText={setInstructor}
-                  returnKeyType="done"
-                />
-              </View>
-
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Class Days</Text>
-                <View style={styles.daysRow}>
-                  {DAYS_OF_WEEK.map((day) => {
-                    const isSelected = selectedDays.includes(day.value);
-                    return (
-                      <TouchableOpacity key={day.value} activeOpacity={0.7} onPress={() => toggleDay(day.value)} style={[styles.dayPill, isSelected && styles.dayPillActive]}>
-                        <Text style={[styles.dayPillText, isSelected && styles.dayPillTextActive]}>{day.label}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
+                <View style={styles.timeDivider}>
+                  <MaterialIcon name="arrow-forward" size={20} color={palette.muted} />
                 </View>
-              </View>
 
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Time</Text>
-                <View style={styles.timeRow}>
-
-                  <View style={styles.timeContainer}>
-                    <Text style={styles.timeLabel}>Starts</Text>
-                    <View style={styles.timeInputWrapper}>
-                      <TextInput
-                        style={styles.timeValueInput}
-                        value={startTime}
-                        onChangeText={(text) => {
-                          const formatted = formatTimeInput(text);
-                          setStartTime(formatted);
-                          if (formatted.length === 5) Keyboard.dismiss();
-                        }}
-                        placeholder="08:30"
-                        placeholderTextColor={palette.muted}
-                        keyboardType="number-pad"
-                        maxLength={5}
-                        returnKeyType="done"
-                      />
-                      <TouchableOpacity style={styles.amPmToggle} onPress={() => setStartAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
-                        <Text style={styles.amPmText}>{startAmPm}</Text>
-                      </TouchableOpacity>
-                    </View>
+                <View style={styles.timeContainer}>
+                  <Text style={styles.timeLabel}>Ends</Text>
+                  <View style={styles.timeInputWrapper}>
+                    <TextInput
+                      ref={endTimeRef}
+                      style={styles.timeValueInput}
+                      value={endTime}
+                      onChangeText={(text) => {
+                        const formatted = formatTimeInput(text);
+                        setEndTime(formatted);
+                        if (formatted.length === 5) Keyboard.dismiss();
+                      }}
+                      onSubmitEditing={() => Keyboard.dismiss()}
+                      placeholder="10:00"
+                      placeholderTextColor={palette.muted}
+                      keyboardType="number-pad"
+                      maxLength={5}
+                      returnKeyType="done"
+                    />
+                    <TouchableOpacity style={styles.amPmToggle} onPress={() => setEndAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
+                      <Text style={styles.amPmText}>{endAmPm}</Text>
+                    </TouchableOpacity>
                   </View>
-
-                  <View style={styles.timeDivider}>
-                    <MaterialIcon name="arrow-forward" size={20} color={palette.muted} />
-                  </View>
-
-                  <View style={styles.timeContainer}>
-                    <Text style={styles.timeLabel}>Ends</Text>
-                    <View style={styles.timeInputWrapper}>
-                      <TextInput
-                        style={styles.timeValueInput}
-                        value={endTime}
-                        onChangeText={(text) => {
-                          const formatted = formatTimeInput(text);
-                          setEndTime(formatted);
-                          if (formatted.length === 5) Keyboard.dismiss();
-                        }}
-                        placeholder="10:00"
-                        placeholderTextColor={palette.muted}
-                        keyboardType="number-pad"
-                        maxLength={5}
-                        returnKeyType="done"
-                      />
-                      <TouchableOpacity style={styles.amPmToggle} onPress={() => setEndAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
-                        <Text style={styles.amPmText}>{endAmPm}</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-
                 </View>
+
               </View>
             </View>
+          </View>
 
-          </ScrollView>
+        </ScrollView>
 
-          {/* DYNAMIC ACTION BUTTONS */}
-          <View style={[styles.bottomWrapper, { paddingBottom: insets.bottom + spacing.xl }]}>
+        {/* RE-ALIGNED TOAST: Hovers cleanly above lowered buttons */}
+        {toastMessage && (
+          <Animated.View
+            style={[
+              styles.toastRootContainer,
+              {
+                bottom: Math.max(insets.bottom, 12) + 120,
+                opacity: toastOpacity,
+                transform: [{ translateY: toastTranslateY }],
+              },
+            ]}
+          >
+            <View style={styles.toastPill}>
+              <Text style={styles.toastText}>{toastMessage}</Text>
+            </View>
+          </Animated.View>
+        )}
 
-            {/* Show "Add Another" ONLY if we are manually entering, NOT reviewing a scan queue */}
+        {/* LOWERED BUTTON DOCK */}
+        {!isKeyboardVisible && (
+          <View style={[styles.bottomWrapper, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
+
             {!editSubjectId && reviewQueue.length === 0 && (
               <TouchableOpacity
                 style={[styles.addAnotherButton, !canAddAnother && styles.addAnotherDisabled]}
@@ -644,16 +791,15 @@ export function ManualEntryScreen({ navigation, route }: any) {
               </TouchableOpacity>
             )}
 
-            {/* Smart FAB that acts as 'Next' during a scan, and 'Finish' at the end */}
             <TouchableOpacity
               style={[styles.fabSave, !isFormValid && styles.fabSaveDisabled]}
               activeOpacity={0.9}
               disabled={!isFormValid}
               onPress={() => {
                 if (reviewQueue.length > 1) {
-                  handleSaveAndAddAnother(); // Shifts to the next subject in queue
+                  handleSaveAndAddAnother();
                 } else {
-                  handleSaveAndFinish(); // Finishes queue and exits
+                  handleSaveAndFinish();
                 }
               }}
             >
@@ -674,25 +820,24 @@ export function ManualEntryScreen({ navigation, route }: any) {
               </Text>
             </TouchableOpacity>
           </View>
+        )}
 
-          <Modal visible={customAlert.visible} transparent animationType="fade">
-            <View style={styles.modalOverlay}>
-              <View style={styles.alertModalContent}>
-                <View style={styles.alertIconContainer}>
-                  <MaterialIcon name="event-busy" size={32} color={palette.primary} />
-                </View>
-                <Text style={styles.alertModalTitle}>{customAlert.title}</Text>
-                <Text style={styles.alertMessage}>{customAlert.message}</Text>
+        <Modal visible={customAlert.visible} transparent animationType="fade">
+          <View style={styles.modalOverlay}>
+            <View style={styles.dialogBox}>
+              <Text style={styles.dialogTitle}>{customAlert.title}</Text>
+              <Text style={styles.dialogMessage}>{customAlert.message}</Text>
 
-                <TouchableOpacity style={styles.alertButton} onPress={closeAlert}>
-                  <Text style={styles.alertButtonText}>Got it</Text>
+              <View style={styles.dialogActions}>
+                <TouchableOpacity style={styles.dialogBtn} onPress={closeAlert}>
+                  <Text style={[styles.dialogBtnText, { color: palette.primary }]}>Got it</Text>
                 </TouchableOpacity>
               </View>
             </View>
-          </Modal>
+          </View>
+        </Modal>
 
-        </View>
-      </TouchableWithoutFeedback>
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -704,32 +849,30 @@ const styles = StyleSheet.create({
   backButton: { padding: spacing.sm },
   headerTitle: { fontSize: 20, fontWeight: '700', color: palette.ink },
   headerRight: { width: 40 },
-
   scannerBanner: { backgroundColor: '#C5A059', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8, marginHorizontal: spacing.xl, borderRadius: 12, marginBottom: spacing.md },
   scannerBannerText: { color: palette.surface, fontSize: 13, fontWeight: '600', marginLeft: 6 },
-
   progressBanner: { backgroundColor: palette.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8, marginHorizontal: spacing.xl, borderRadius: 12, marginBottom: spacing.md },
   progressText: { color: palette.surface, fontSize: 13, fontWeight: '600', marginLeft: 6 },
 
-  scrollContent: { paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: 400 },
+  // DOUBLED SCROLL PADDING: Pushes Time row completely above the buttons
+  scrollContent: { paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: 210 },
+
   section: { marginBottom: spacing.xxl },
   sectionLabel: { fontSize: 14, fontWeight: '600', color: palette.ink, marginBottom: spacing.md, opacity: 0.8 },
-
   termRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
   termPill: { flex: 1, height: 44, borderRadius: 22, backgroundColor: 'rgba(28, 28, 30, 0.04)', justifyContent: 'center', alignItems: 'center' },
   termPillActive: { backgroundColor: palette.ink },
   termPillText: { fontSize: 14, fontWeight: '600', color: palette.ink },
   termPillTextActive: { color: palette.surface },
-
   termPillDisabled: { opacity: 0.35, backgroundColor: 'transparent', borderWidth: 1, borderColor: 'rgba(28,28,30,0.1)' },
   termTextDisabled: { color: palette.muted },
 
   totalSubjectsWrapper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, paddingHorizontal: 20, paddingVertical: 12 },
   inputContextLabel: { fontSize: 15, fontWeight: '600', color: palette.ink },
+  inputContextSub: { fontSize: 12, color: palette.muted, fontWeight: '500', marginTop: 2 },
   inputContext: { fontSize: 16, fontWeight: '700', color: palette.ink, backgroundColor: 'rgba(255, 255, 255, 0.6)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, textAlign: 'center', minWidth: 60 },
 
   disabledSection: { opacity: 0.4 },
-
   codeUnitRow: { flexDirection: 'row', alignItems: 'center' },
   flex2: { flex: 2 },
   spacer: { width: spacing.md },
@@ -737,54 +880,49 @@ const styles = StyleSheet.create({
   unitDropdownError: { borderWidth: 1, borderColor: '#d32f2f', backgroundColor: 'rgba(211, 47, 47, 0.05)' },
   unitDropdownText: { fontSize: 15, fontWeight: '600', color: palette.ink },
   textError: { color: '#d32f2f' },
-
   errorBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8 },
   errorText: { color: '#d32f2f', fontSize: 12, fontWeight: '600', marginLeft: 4 },
-
   unitOptionsRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, padding: 8, marginTop: spacing.sm },
   unitOptionPill: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
   unitOptionPillActive: { backgroundColor: palette.primary },
   unitOptionText: { fontSize: 14, fontWeight: '600', color: palette.ink },
   unitOptionTextActive: { color: palette.surface },
-
   input: { backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, paddingHorizontal: 20, height: 56, fontSize: 16, fontWeight: '500', color: palette.ink, marginBottom: spacing.md },
-
   daysRow: { flexDirection: 'row', justifyContent: 'space-between' },
   dayPill: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(28, 28, 30, 0.04)', justifyContent: 'center', alignItems: 'center' },
   dayPillActive: { backgroundColor: palette.primary },
   dayPillText: { fontSize: 15, fontWeight: '600', color: palette.ink },
   dayPillTextActive: { color: palette.surface },
 
-  timeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  timeContainer: { flex: 1, backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, padding: 12, alignItems: 'center' },
-  timeLabel: { fontSize: 12, color: palette.muted, fontWeight: '600', marginBottom: 6 },
-  timeInputWrapper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  timeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  timeContainer: { flex: 1, backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, paddingVertical: 12, paddingHorizontal: 10, alignItems: 'center' },
+  timeLabel: { fontSize: 12, color: palette.muted, fontWeight: '600', marginBottom: 4 },
+  timeInputWrapper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%', gap: 4 },
+  timeValueInput: { fontSize: 16, color: palette.ink, fontWeight: '700', textAlign: 'center', padding: 0, margin: 0, height: 36, minWidth: 54 },
+  amPmToggle: { backgroundColor: 'rgba(28, 28, 30, 0.08)', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8 },
+  amPmText: { fontSize: 13, fontWeight: '700', color: palette.primary },
+  timeDivider: { justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2 },
 
-  timeValueInput: {
-    fontSize: 18, color: palette.ink, fontWeight: '700', textAlign: 'center', paddingVertical: 4, paddingHorizontal: 0, margin: 0, marginRight: 6, minWidth: 72, height: 38,
-  },
-
-  amPmToggle: { backgroundColor: 'rgba(28, 28, 30, 0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  amPmText: { fontSize: 14, fontWeight: '700', color: palette.primary },
-  timeDivider: { paddingHorizontal: spacing.md },
-
-  bottomWrapper: { position: 'absolute', bottom: 0, width: '100%', alignItems: 'center', backgroundColor: palette.bg, paddingTop: spacing.md },
-  addAnotherButton: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md, paddingVertical: spacing.xs, paddingHorizontal: spacing.md },
+  // STREAMLINED DOCK MARGINS: Tucks buttons against bottom screen edge
+  bottomWrapper: { position: 'absolute', bottom: 0, width: '100%', alignItems: 'center', backgroundColor: palette.bg, paddingTop: 10 },
+  addAnotherButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, paddingVertical: 4, paddingHorizontal: spacing.md },
   addAnotherText: { color: palette.primary, fontSize: 15, fontWeight: '700', marginLeft: 4 },
-
   addAnotherDisabled: { opacity: 0.5 },
   textMuted: { color: palette.muted },
-
   fabSave: { height: 64, borderRadius: 32, backgroundColor: palette.primary, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 48, shadowColor: palette.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 20, elevation: 6 },
   fabSaveDisabled: { backgroundColor: 'rgba(28, 28, 30, 0.08)', shadowOpacity: 0, elevation: 0 },
   fabIcon: { marginRight: spacing.sm },
   fabSaveText: { color: palette.surface, fontSize: 18, fontWeight: '700' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: spacing.xl },
-  alertModalContent: { backgroundColor: palette.surface, borderRadius: 28, padding: spacing.xl, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 10 },
-  alertIconContainer: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(122, 28, 28, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: spacing.md },
-  alertModalTitle: { fontSize: 20, fontWeight: '700', color: palette.ink, marginBottom: spacing.sm, textAlign: 'center' },
-  alertMessage: { fontSize: 15, color: palette.body, textAlign: 'center', lineHeight: 22, marginBottom: spacing.xl, paddingHorizontal: spacing.sm },
-  alertButton: { width: '100%', height: 52, borderRadius: 26, backgroundColor: palette.primary, justifyContent: 'center', alignItems: 'center' },
-  alertButtonText: { fontSize: 16, fontWeight: '600', color: palette.surface },
+  dialogBox: { backgroundColor: palette.surface, borderRadius: 28, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 8 },
+  dialogTitle: { fontSize: 22, fontWeight: '600', color: palette.ink, marginBottom: 14 },
+  dialogMessage: { fontSize: 15, color: palette.body, lineHeight: 22, marginBottom: 28 },
+  dialogActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12 },
+  dialogBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
+  dialogBtnText: { fontSize: 15, fontWeight: '600' },
+
+  toastRootContainer: { position: 'absolute', left: 0, right: 0, alignItems: 'center', zIndex: 9999, pointerEvents: 'none' },
+  toastPill: { backgroundColor: palette.ink, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 6 },
+  toastText: { color: palette.surface, fontSize: 13, fontWeight: '600', letterSpacing: 0.2 },
 });

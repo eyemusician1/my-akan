@@ -12,6 +12,7 @@ export default class Schedule extends Model {
   @field('total_subjects') totalSubjects?: number;
 
   @readonly @date('created_at') createdAt!: Date;
+  @readonly @date('updated_at') updatedAt!: Date;
 
   // Fetches all subjects tied to this specific term
   @children('subjects') subjects!: any;

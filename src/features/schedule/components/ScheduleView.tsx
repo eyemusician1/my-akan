@@ -1,4 +1,4 @@
-import React, { useState, Fragment } from 'react';
+import React, { useState, Fragment, useCallback, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,20 +7,19 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
-  Modal
+  Modal,
+  DeviceEventEmitter
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import withObservables from '@nozbe/with-observables';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 
 import { palette, spacing } from '../../../tokens';
 import { database } from '../../../core/database';
 import Subject from '../../../core/database/models/Subject';
 
-if (Platform.OS === 'android') {
-  if (UIManager.setLayoutAnimationEnabledExperimental) {
-    UIManager.setLayoutAnimationEnabledExperimental(true);
-  }
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
 const HOUR_HEIGHT = 60;
@@ -105,14 +104,21 @@ const ExpandableEventCard = ({ item, onDelete }: { item: any, onDelete: () => vo
 
         {isExpanded && (
           <View style={styles.footerRow}>
+
+            {/* RESOLVED OVERLAPPING: Flex 1 + flexShrink traps long text gracefully */}
             <View style={styles.footerInfo}>
               <View style={styles.footerItem}>
                 <MaterialIcon name="room" size={16} color={item.themeColor} style={styles.iconOp} />
-                <Text style={[styles.footerText, { color: item.themeColor }]}>{item.room || 'TBA'}</Text>
+                <Text style={[styles.footerText, { color: item.themeColor }]} numberOfLines={1}>
+                  {item.room || 'TBA'}
+                </Text>
               </View>
+
               <View style={styles.footerItem}>
                 <MaterialIcon name="person" size={16} color={item.themeColor} style={styles.iconOp} />
-                <Text style={[styles.footerText, { color: item.themeColor }]}>{item.instructor || 'TBA'}</Text>
+                <Text style={[styles.footerText, { color: item.themeColor }]} numberOfLines={1}>
+                  {item.instructor || 'TBA'}
+                </Text>
               </View>
             </View>
 
@@ -124,6 +130,7 @@ const ExpandableEventCard = ({ item, onDelete }: { item: any, onDelete: () => vo
                 <MaterialIcon name="delete-outline" size={18} color={palette.muted} />
               </TouchableOpacity>
             </View>
+
           </View>
         )}
       </TouchableOpacity>
@@ -134,6 +141,56 @@ const ExpandableEventCard = ({ item, onDelete }: { item: any, onDelete: () => vo
 const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
   const [viewMode, setViewMode] = useState<'agenda' | 'week'>('agenda');
   const [itemToDelete, setItemToDelete] = useState<any>(null);
+  const [tick, setTick] = useState(0);
+  const prevSubjectsRef = useRef<any[] | null>(null);
+
+  useEffect(() => {
+    if (prevSubjectsRef.current) {
+      const prev = prevSubjectsRef.current;
+      const curr = subjects;
+
+      if (curr.length > prev.length) {
+        DeviceEventEmitter.emit('SHOW_TOAST', 'Subject added to schedule');
+      } else if (curr.length < prev.length) {
+        DeviceEventEmitter.emit('SHOW_TOAST', 'Subject removed');
+      } else {
+        const isModified = curr.some(c => {
+          const p = prev.find(item => item.id === c.id);
+          if (!p) return false;
+          return (
+            c.startTime !== p.startTime ||
+            c.endTime !== p.endTime ||
+            c.title !== p.title ||
+            c.room !== p.room ||
+            c.instructor !== p.instructor ||
+            c.code !== p.code ||
+            c.days.join(',') !== p.days.join(',')
+          );
+        });
+
+        if (isModified) {
+          DeviceEventEmitter.emit('SHOW_TOAST', 'Schedule updated');
+        }
+      }
+    }
+
+    prevSubjectsRef.current = subjects.map(s => ({
+      id: s.id,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      title: s.title,
+      room: s.room,
+      instructor: s.instructor,
+      code: s.code,
+      days: [...s.days]
+    }));
+  }, [subjects]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setTick(t => t + 1);
+    }, [])
+  );
 
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const dayNamesFull = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -143,6 +200,7 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
   const currentDateString = `${currentDayName}, ${monthNames[today.getMonth()]} ${today.getDate()}`;
 
   const activeDay = DAYS.includes(currentDayName) ? currentDayName : 'Mon';
+  const isSunday = currentDayName === 'Sun';
 
   const themeColors = [palette.primary, palette.body, palette.ink];
   const bgTints = ['rgba(122, 28, 28, 0.08)', 'rgba(197, 160, 89, 0.15)', 'rgba(28, 28, 30, 0.06)'];
@@ -195,6 +253,20 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
   };
 
   const renderAgenda = () => {
+    if (isSunday) {
+      return (
+        <View style={styles.sundayCard}>
+          <View style={styles.sundayIconPill}>
+            <MaterialIcon name="weekend" size={28} color={palette.primary} />
+          </View>
+          <Text style={styles.sundayTitle}>It's Sunday! ☕</Text>
+          <Text style={styles.sundayMessage}>
+            No scheduled classes today. Put your phone away, get some rest, and recharge for the week ahead.
+          </Text>
+        </View>
+      );
+    }
+
     if (agendaItems.length === 0) {
       return (
         <View style={styles.emptyState}>
@@ -302,7 +374,6 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
       <View style={styles.weekGrid}>
         {DAYS.map((day) => (
           <View key={day} style={styles.dayColumn}>
-
             <View style={styles.dayHeader}>
               <Text style={styles.dayHeaderText}>{day}</Text>
             </View>
@@ -370,23 +441,21 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
 
       {viewMode === 'agenda' ? renderAgenda() : renderWeek()}
 
+      {/* ICONLESS CLEAN GOOGLE M3 DIALOG */}
       <Modal visible={!!itemToDelete} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalIconContainer}>
-              <MaterialIcon name="delete-outline" size={32} color={palette.primary} />
-            </View>
-            <Text style={styles.modalTitle}>Remove Class</Text>
-            <Text style={styles.modalMessage}>
-              Are you sure you want to remove <Text style={styles.modalHighlight}>{itemToDelete?.code}</Text> from your schedule? This action cannot be undone.
+          <View style={styles.dialogBox}>
+            <Text style={styles.dialogTitle}>Remove class?</Text>
+            <Text style={styles.dialogMessage}>
+              This will permanently remove <Text style={styles.boldSpan}>{itemToDelete?.code}</Text> from your schedule.
             </Text>
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setItemToDelete(null)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
+            <View style={styles.dialogActions}>
+              <TouchableOpacity style={styles.dialogBtn} onPress={() => setItemToDelete(null)}>
+                <Text style={[styles.dialogBtnText, { color: palette.ink }]}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalDeleteBtn} onPress={confirmDelete}>
-                <Text style={styles.modalDeleteText}>Delete</Text>
+              <TouchableOpacity style={styles.dialogBtn} onPress={confirmDelete}>
+                <Text style={[styles.dialogBtnText, { color: palette.primary }]}>Remove</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -398,18 +467,23 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
 };
 
 export const ScheduleView = withObservables([], () => ({
-  subjects: database.collections.get<Subject>('subjects').query().observe(),
+  subjects: database.collections.get<Subject>('subjects')
+    .query()
+    .observeWithColumns(['start_time', 'end_time', 'code', 'section', 'title', 'room', 'instructor', 'days']),
 }))(ScheduleViewUI);
 
 const styles = StyleSheet.create({
   container: { marginTop: spacing.sm },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg, paddingHorizontal: spacing.xs },
-
   dateText: { fontSize: 18, fontWeight: '700', color: palette.ink },
-
   toggleWrapper: { flexDirection: 'row', backgroundColor: 'rgba(28, 28, 30, 0.05)', borderRadius: 20, padding: 4 },
   toggleButton: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
   toggleButtonActive: { backgroundColor: palette.surface, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
+
+  sundayCard: { backgroundColor: 'rgba(122, 28, 28, 0.05)', padding: 28, borderRadius: 28, alignItems: 'center', marginTop: 10, borderWidth: 1, borderColor: 'rgba(122, 28, 28, 0.08)' },
+  sundayIconPill: { width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(122, 28, 28, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+  sundayTitle: { fontSize: 22, fontWeight: '700', color: palette.ink, marginBottom: 8 },
+  sundayMessage: { fontSize: 14, color: palette.body, textAlign: 'center', lineHeight: 22, paddingHorizontal: 10 },
 
   eventsContainer: { gap: 16 },
   eventRow: { flexDirection: 'row', alignItems: 'flex-start' },
@@ -424,13 +498,15 @@ const styles = StyleSheet.create({
   dayLabelHighlight: { fontWeight: '700' },
   eventTimeRange: { fontSize: 14, color: palette.ink, opacity: 0.7, fontWeight: '500' },
 
+  // Updated Footer Flexbox Shrink Barrier
   footerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderColor: 'rgba(0,0,0,0.05)' },
-  footerInfo: { flexDirection: 'row', gap: spacing.lg },
-  footerActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  actionBtn: { padding: 4, backgroundColor: 'rgba(0,0,0,0.04)', borderRadius: 8 },
-  footerItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  footerInfo: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingRight: 10, overflow: 'hidden' },
+  footerItem: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 4 },
   iconOp: { opacity: 0.8 },
-  footerText: { fontSize: 13, fontWeight: '600', opacity: 0.85 },
+  footerText: { flexShrink: 1, fontSize: 13, fontWeight: '600', opacity: 0.85 },
+  footerActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flexShrink: 0 },
+
+  actionBtn: { padding: 4, backgroundColor: 'rgba(0,0,0,0.04)', borderRadius: 8 },
 
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
   emptyStateText: { marginTop: 12, fontSize: 15, color: palette.muted, fontWeight: '500' },
@@ -442,17 +518,14 @@ const styles = StyleSheet.create({
   freeTimePill: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(28, 28, 30, 0.04)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
   freeTimeText: { fontSize: 12, fontWeight: '600', color: palette.muted, marginLeft: 6 },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.4)', justifyContent: 'center', alignItems: 'center', padding: spacing.xl },
-  modalContent: { width: '100%', backgroundColor: palette.surface, borderRadius: 28, padding: spacing.xl, alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.1, shadowRadius: 20, elevation: 10 },
-  modalIconContainer: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(122, 28, 28, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: spacing.md },
-  modalTitle: { fontSize: 22, fontWeight: '700', color: palette.ink, marginBottom: spacing.xs },
-  modalMessage: { fontSize: 15, color: palette.body, textAlign: 'center', lineHeight: 22, marginBottom: spacing.xl, paddingHorizontal: spacing.sm },
-  modalHighlight: { fontWeight: '700', color: palette.ink },
-  modalActions: { flexDirection: 'row', width: '100%', gap: spacing.md },
-  modalCancelBtn: { flex: 1, height: 52, borderRadius: 26, backgroundColor: 'rgba(28, 28, 30, 0.05)', justifyContent: 'center', alignItems: 'center' },
-  modalCancelText: { fontSize: 16, fontWeight: '600', color: palette.ink },
-  modalDeleteBtn: { flex: 1, height: 52, borderRadius: 26, backgroundColor: palette.primary, justifyContent: 'center', alignItems: 'center' },
-  modalDeleteText: { fontSize: 16, fontWeight: '600', color: palette.surface },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.4)', justifyContent: 'center', padding: spacing.xl },
+  dialogBox: { backgroundColor: palette.surface, borderRadius: 28, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 8 },
+  dialogTitle: { fontSize: 22, fontWeight: '600', color: palette.ink, marginBottom: 14 },
+  dialogMessage: { fontSize: 15, color: palette.body, lineHeight: 22, marginBottom: 28 },
+  boldSpan: { fontWeight: '700', color: palette.ink },
+  dialogActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12 },
+  dialogBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
+  dialogBtnText: { fontSize: 15, fontWeight: '600' },
 
   weekGridWrapper: { flexDirection: 'row', borderTopWidth: 1, borderColor: palette.border, paddingTop: spacing.sm },
   timeAxis: { width: 44 },
@@ -465,7 +538,6 @@ const styles = StyleSheet.create({
   dayGridArea: { position: 'relative', height: HOURS.length * HOUR_HEIGHT },
   gridLine: { height: HOUR_HEIGHT, borderTopWidth: 1, borderColor: 'rgba(0,0,0,0.05)' },
 
-  /* --- FIX: Shadow strictly removed --- */
   gridEventCard: {
     position: 'absolute',
     width: '96%',
@@ -478,7 +550,6 @@ const styles = StyleSheet.create({
     borderLeftColor: 'rgba(0,0,0,0.15)',
     overflow: 'hidden',
     zIndex: 10,
-    // Note: No elevation property is present here, making it completely flat
   },
   gridEventTitle: { fontSize: 9.5, lineHeight: 11, fontWeight: '700', marginBottom: 1 },
   gridEventTime: { fontSize: 8.5, lineHeight: 10, fontWeight: '600', opacity: 0.8 },
