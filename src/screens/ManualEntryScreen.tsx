@@ -49,17 +49,28 @@ const timeToDecimal = (time: string, period: string) => {
   return hours + (minutes / 60);
 };
 
+const normalizeSemester = (raw: string | undefined) => {
+  if (!raw) return '';
+  const lower = raw.toLowerCase();
+  if (lower.includes('1') || lower.includes('first')) return '1st Sem';
+  if (lower.includes('2') || lower.includes('second')) return '2nd Sem';
+  if (lower.includes('sum')) return 'Summer';
+  return '1st Sem';
+};
+
 export function ManualEntryScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
 
   const editSubjectId = route?.params?.editSubjectId;
-  const extractedSemester = route?.params?.extractedSemester;
+  const rawExtractedSemester = route?.params?.extractedSemester;
+
+  const normalizedExtracted = rawExtractedSemester ? normalizeSemester(rawExtractedSemester) : '';
 
   const initialQueue = route?.params?.extractedSubjects || [];
   const [reviewQueue, setReviewQueue] = useState<any[]>(initialQueue);
   const totalScanned = useRef(initialQueue.length).current;
 
-  const [semester, setSemester] = useState(extractedSemester || '1st Sem');
+  const [semester, setSemester] = useState(normalizedExtracted || '1st Sem');
   const [declaredTotalUnits, setDeclaredTotalUnits] = useState('');
 
   const [addedCount, setAddedCount] = useState(0);
@@ -86,14 +97,12 @@ export function ManualEntryScreen({ navigation, route }: any) {
 
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
-  // Field Refs for auto-advancing
   const sectionRef = useRef<TextInput>(null);
   const titleRef = useRef<TextInput>(null);
   const roomRef = useRef<TextInput>(null);
   const instructorRef = useRef<TextInput>(null);
   const endTimeRef = useRef<TextInput>(null);
 
-  // Local Animated Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const toastTranslateY = useRef(new Animated.Value(15)).current;
@@ -177,10 +186,10 @@ export function ManualEntryScreen({ navigation, route }: any) {
   }, []);
 
   useEffect(() => {
-    if (reviewQueue.length > 0 && extractedSemester) {
-      setSemester(extractedSemester);
+    if (reviewQueue.length > 0 && normalizedExtracted) {
+      setSemester(normalizedExtracted);
     }
-  }, [reviewQueue, extractedSemester]);
+  }, [reviewQueue, normalizedExtracted]);
 
   useEffect(() => {
     if (editSubjectId) {
@@ -247,7 +256,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
   }, [editSubjectId, reviewQueue]);
 
   useEffect(() => {
-    if (editSubjectId || reviewQueue.length > 0) return;
+    if (editSubjectId || reviewQueue.length > 0 || normalizedExtracted) return;
 
     const initRecentTerm = async () => {
       const recent = await database.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).fetch();
@@ -256,7 +265,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
       }
     };
     initRecentTerm();
-  }, [editSubjectId, reviewQueue]);
+  }, [editSubjectId, reviewQueue, normalizedExtracted]);
 
   useEffect(() => {
     if (editSubjectId) return;
@@ -326,15 +335,18 @@ export function ManualEntryScreen({ navigation, route }: any) {
     return cleaned;
   };
 
+  // ============================================================================
+  // TBA MODE: Allow blank logistics (Days, Time) while strictly enforcing completeness if partially filled
+  // ============================================================================
+  const isTimeComplete = startTime.length === 5 && endTime.length === 5 && selectedDays.length > 0;
+  const isTBA = startTime.length === 0 && endTime.length === 0 && selectedDays.length === 0;
+  const isLogisticsValid = isTimeComplete || isTBA;
+
   const isFormValid =
     (editSubjectId || reviewQueue.length > 0 ? true : declaredTotalUnits.trim().length > 0) &&
     code.trim().length > 0 &&
     title.trim().length > 0 &&
-    room.trim().length > 0 &&
-    instructor.trim().length > 0 &&
-    selectedDays.length > 0 &&
-    startTime.length === 5 &&
-    endTime.length === 5 &&
+    isLogisticsValid &&
     !hasUnitError &&
     !isDeclaredUnitLimitReached;
 
@@ -345,6 +357,9 @@ export function ManualEntryScreen({ navigation, route }: any) {
     (isNaN(declaredLimitNum) || newTotalAfterSave < declaredLimitNum);
 
   const checkTimeConflict = async () => {
+    // Instantly bypass conflict checks if it is an unscheduled TBA class[cite: 7]
+    if (selectedDays.length === 0 || !startTime || !endTime) return false;
+
     const newStart = timeToDecimal(startTime, startAmPm);
     const newEnd = timeToDecimal(endTime, endAmPm);
 
@@ -363,6 +378,9 @@ export function ManualEntryScreen({ navigation, route }: any) {
 
       const hasSharedDays = selectedDays.some(d => subj.days.includes(d));
       if (!hasSharedDays) continue;
+
+      // Skip conflict check against other existing TBA subjects
+      if (!subj.startTime || !subj.endTime) continue;
 
       const [sTime, sPeriod] = subj.startTime.split(' ');
       const [eTime, ePeriod] = subj.endTime.split(' ');
@@ -395,6 +413,9 @@ export function ManualEntryScreen({ navigation, route }: any) {
           });
         }
 
+        const finalStartTime = startTime ? `${startTime} ${startAmPm}` : '';
+        const finalEndTime = endTime ? `${endTime} ${endAmPm}` : '';
+
         if (editSubjectId) {
           const subjectToUpdate = await database.get<Subject>('subjects').find(editSubjectId);
           const oldSchedule = await subjectToUpdate.schedule.fetch();
@@ -408,8 +429,8 @@ export function ManualEntryScreen({ navigation, route }: any) {
             subj.room = room;
             subj.instructor = instructor;
             subj.days = selectedDays;
-            subj.startTime = `${startTime} ${startAmPm}`;
-            subj.endTime = `${endTime} ${endAmPm}`;
+            subj.startTime = finalStartTime;
+            subj.endTime = finalEndTime;
           });
 
           if (oldSchedule.id !== currentSchedule.id) {
@@ -426,8 +447,8 @@ export function ManualEntryScreen({ navigation, route }: any) {
             subj.room = room;
             subj.instructor = instructor;
             subj.days = selectedDays;
-            subj.startTime = `${startTime} ${startAmPm}`;
-            subj.endTime = `${endTime} ${endAmPm}`;
+            subj.startTime = finalStartTime;
+            subj.endTime = finalEndTime;
           });
         }
 
@@ -435,9 +456,6 @@ export function ManualEntryScreen({ navigation, route }: any) {
           sch.academicTerm = semester;
           if (declaredTotalUnits) sch.totalSubjects = parseInt(declaredTotalUnits, 10);
         });
-
-        const allEnrolledSubjects = await currentSchedule.subjects.fetch();
-        await NotificationService.syncScheduleAlarms(allEnrolledSubjects);
       });
     } catch (dbError) {
       console.log('WatermelonDB commit note:', dbError);
@@ -479,13 +497,11 @@ export function ManualEntryScreen({ navigation, route }: any) {
     if (hasConflict) return;
 
     try {
-      await saveToDatabase(); // <-- SQLite transaction finishes completely here!
+      await saveToDatabase();
 
-      // 1. NOW we fetch from disk, guaranteeing the new subject is inside the array
       const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
       if (schedules[0]) {
         const securelySavedSubjects = await schedules[0].subjects.fetch();
-
         console.log(`[NOTIFEE] Queuing alarms for ${securelySavedSubjects.length} subjects...`);
         await NotificationService.syncScheduleAlarms(securelySavedSubjects);
       }
@@ -543,16 +559,20 @@ export function ManualEntryScreen({ navigation, route }: any) {
           <View style={styles.section} pointerEvents={reviewQueue.length > 0 ? 'none' : 'auto'}>
             <Text style={styles.sectionLabel}>Academic Term</Text>
 
-            <View style={[styles.termRow, reviewQueue.length > 0 && { opacity: 0.5 }]}>
+            {/* RESOLVED HIGHLIGHT BUG: Replaced global row opacity fade with targeted disabled fade */}
+            <View style={styles.termRow}>
               {TERMS.map((term) => {
                 const isSelected = semester === term;
-                const isDisabled = addedCount > 0 && !isSelected;
+                const isReviewLocked = reviewQueue.length > 0;
+                // If it is locked and not selected, we gray it out.
+                // The active one stays 100% solid color!
+                const isDisabled = (addedCount > 0 && !isSelected) || (isReviewLocked && !isSelected);
 
                 return (
                   <TouchableOpacity
                     key={term}
                     activeOpacity={0.7}
-                    disabled={isDisabled}
+                    disabled={isDisabled || isReviewLocked}
                     onPress={() => handleTermChange(term)}
                     style={[ styles.termPill, isSelected && styles.termPillActive, isDisabled && styles.termPillDisabled ]}
                   >
@@ -633,7 +653,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
               <TextInput
                 ref={sectionRef}
                 style={[styles.input, { marginTop: spacing.md }]}
-                placeholder="Section (e.g. Gg)"
+                placeholder="Section (e.g. Gg) (Optional)"
                 placeholderTextColor={palette.muted}
                 value={section}
                 onChangeText={setSection}
@@ -656,7 +676,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
             </View>
 
             <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Logistics</Text>
+              <Text style={styles.sectionLabel}>Logistics (Optional for TBA)</Text>
               <TextInput
                 ref={roomRef}
                 style={styles.input}
@@ -680,7 +700,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
             </View>
 
             <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Class Days</Text>
+              <Text style={styles.sectionLabel}>Class Days (Optional for TBA)</Text>
               <View style={styles.daysRow}>
                 {DAYS_OF_WEEK.map((day) => {
                   const isSelected = selectedDays.includes(day.value);
@@ -694,7 +714,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
             </View>
 
             <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Time</Text>
+              <Text style={styles.sectionLabel}>Time (Optional for TBA)</Text>
 
               <View style={styles.timeRow}>
 
@@ -710,7 +730,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
                         if (formatted.length === 5) endTimeRef.current?.focus();
                       }}
                       onSubmitEditing={() => endTimeRef.current?.focus()}
-                      placeholder="08:30"
+                      placeholder="8:00"
                       placeholderTextColor={palette.muted}
                       keyboardType="number-pad"
                       maxLength={5}
@@ -739,7 +759,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
                         if (formatted.length === 5) Keyboard.dismiss();
                       }}
                       onSubmitEditing={() => Keyboard.dismiss()}
-                      placeholder="10:00"
+                      placeholder="5:00"
                       placeholderTextColor={palette.muted}
                       keyboardType="number-pad"
                       maxLength={5}
@@ -757,7 +777,6 @@ export function ManualEntryScreen({ navigation, route }: any) {
 
         </ScrollView>
 
-        {/* RE-ALIGNED TOAST: Hovers cleanly above lowered buttons */}
         {toastMessage && (
           <Animated.View
             style={[
@@ -775,7 +794,6 @@ export function ManualEntryScreen({ navigation, route }: any) {
           </Animated.View>
         )}
 
-        {/* LOWERED BUTTON DOCK */}
         {!isKeyboardVisible && (
           <View style={[styles.bottomWrapper, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
 
@@ -854,7 +872,6 @@ const styles = StyleSheet.create({
   progressBanner: { backgroundColor: palette.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8, marginHorizontal: spacing.xl, borderRadius: 12, marginBottom: spacing.md },
   progressText: { color: palette.surface, fontSize: 13, fontWeight: '600', marginLeft: 6 },
 
-  // DOUBLED SCROLL PADDING: Pushes Time row completely above the buttons
   scrollContent: { paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: 210 },
 
   section: { marginBottom: spacing.xxl },
@@ -864,6 +881,8 @@ const styles = StyleSheet.create({
   termPillActive: { backgroundColor: palette.ink },
   termPillText: { fontSize: 14, fontWeight: '600', color: palette.ink },
   termPillTextActive: { color: palette.surface },
+
+  // Replaced global wrapper opacity fade with a direct UI disabled fade
   termPillDisabled: { opacity: 0.35, backgroundColor: 'transparent', borderWidth: 1, borderColor: 'rgba(28,28,30,0.1)' },
   termTextDisabled: { color: palette.muted },
 
@@ -903,7 +922,6 @@ const styles = StyleSheet.create({
   amPmText: { fontSize: 13, fontWeight: '700', color: palette.primary },
   timeDivider: { justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2 },
 
-  // STREAMLINED DOCK MARGINS: Tucks buttons against bottom screen edge
   bottomWrapper: { position: 'absolute', bottom: 0, width: '100%', alignItems: 'center', backgroundColor: palette.bg, paddingTop: 10 },
   addAnotherButton: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, paddingVertical: 4, paddingHorizontal: spacing.md },
   addAnotherText: { color: palette.primary, fontSize: 15, fontWeight: '700', marginLeft: 4 },

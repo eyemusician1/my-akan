@@ -4,6 +4,8 @@ import SQLiteAdapter from '@nozbe/watermelondb/adapters/sqlite';
 import { schema } from './schema';
 import Schedule from './models/Schedule';
 import Subject from './models/Subject';
+import Expense from './models/Expense';
+import Due from './models/Due';
 
 const adapter = new SQLiteAdapter({
   schema,
@@ -19,5 +21,7 @@ export const database = new Database({
   modelClasses: [
     Schedule,
     Subject,
+    Expense,
+    Due
   ],
 });

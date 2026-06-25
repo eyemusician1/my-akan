@@ -1,7 +1,7 @@
 import { appSchema, tableSchema } from '@nozbe/watermelondb';
 
 export const schema = appSchema({
-  version: 1,
+  version: 2, // Bumped to version 2 to trigger the new tables
   tables: [
     tableSchema({
       name: 'schedules',
@@ -21,9 +21,29 @@ export const schema = appSchema({
         { name: 'units', type: 'number' },
         { name: 'room', type: 'string', isOptional: true },
         { name: 'instructor', type: 'string', isOptional: true },
-        { name: 'days', type: 'string' }, // Arrays must be stored as strings in SQLite
+        { name: 'days', type: 'string' },
         { name: 'start_time', type: 'string' },
         { name: 'end_time', type: 'string' },
+        { name: 'created_at', type: 'number' },
+      ],
+    }),
+    // --- NEW FINANCE TABLES ---
+    tableSchema({
+      name: 'expenses',
+      columns: [
+        { name: 'title', type: 'string' },
+        { name: 'amount', type: 'number' },
+        { name: 'category', type: 'string' },
+        { name: 'icon', type: 'string' },
+        { name: 'created_at', type: 'number' },
+      ],
+    }),
+    tableSchema({
+      name: 'dues',
+      columns: [
+        { name: 'title', type: 'string' },
+        { name: 'amount', type: 'number' },
+        { name: 'is_paid', type: 'boolean' },
         { name: 'created_at', type: 'number' },
       ],
     }),

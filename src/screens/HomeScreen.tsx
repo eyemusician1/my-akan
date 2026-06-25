@@ -114,7 +114,6 @@ export function HomeScreen({ navigation }: any) {
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [userName, setUserName] = useState('');
 
-  // Master Window Toast States
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const toastTranslateY = useRef(new Animated.Value(15)).current;
@@ -259,7 +258,15 @@ export function HomeScreen({ navigation }: any) {
                 activeFilter === filter && styles.filterChipActive,
                 pressed && styles.pressedState
               ]}
-              onPress={() => setActiveFilter(filter)}
+              onPress={() => {
+                // INTERCEPT: If they tap Payments, open the Finance screen.
+                // Otherwise, safely swap the local tab filter.
+                if (filter === 'Payments') {
+                  navigation.navigate('Finance');
+                } else {
+                  setActiveFilter(filter);
+                }
+              }}
             >
               <Text style={[styles.filterText, activeFilter === filter && styles.filterTextActive]}>
                 {filter}

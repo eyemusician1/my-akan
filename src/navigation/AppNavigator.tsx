@@ -11,6 +11,8 @@ import { ManualEntryScreen } from '../screens/ManualEntryScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { ScannerScreen } from '../screens/ScannerScreen';
 import { RecentSchedulesScreen } from '../screens/RecentSchedulesScreen';
+// --- NEW IMPORT FOR THE FINANCE PAGE ---
+import { PaymentsScreen } from '../screens/PaymentsScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -88,6 +90,9 @@ export function AppNavigator() {
           <Stack.Screen name="Scanner" component={ScannerScreen} />
           <Stack.Screen name="RecentSchedules" component={RecentSchedulesScreen} />
 
+          {/* --- REGISTERED FINANCE SCREEN --- */}
+          <Stack.Screen name="Finance" component={PaymentsScreen} />
+
         </Stack.Navigator>
       )}
 
@@ -117,9 +122,9 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bg
   },
   splashScreen: {
-    ...StyleSheet.absoluteFillObject, // Covers the entire screen
-    backgroundColor: palette.bg,      // Matches your app's warm theme
-    zIndex: 999,                      // Forces it to sit on top of the Navigator
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: palette.bg,
+    zIndex: 999,
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 60,
@@ -139,7 +144,7 @@ const styles = StyleSheet.create({
   brandText: {
     fontSize: 18,
     fontWeight: '600',
-    color: palette.muted, // A soft, subtle color just like Google Drive
+    color: palette.muted,
     letterSpacing: 0.5,
   }
 });

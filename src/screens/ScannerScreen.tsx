@@ -1,32 +1,11 @@
 /**
  * ScannerScreen.tsx — Production COR OCR Scanner
  *
- * ── Update: Orientation handling ─────────────────────────────────────────────
- * Empirically tested against a real MSU COR photo (no EXIF orientation tag):
- *   sideways orientation → 0 of 8 subject codes recovered, pure OCR noise
- *   upright orientation  → 7-8 of 8 subject codes recovered, clean text
- * Orientation is the single biggest lever for extraction accuracy — bigger
- * than resolution, lighting, or crop tightness. This version adds:
- *   [A] A manual rotate button on the Review screen — immediate, visible fix
- *   [B] Automatic best-orientation detection as a fallback safety net —
- *       scores OCR output at 0°/90°/180°/270° and keeps the best result,
- *       only paying the extra cost when the first attempt looks like noise
- *
- * NEW DEPENDENCY REQUIRED:
- *   npm install react-native-image-resizer
- *   npx pod-install ios          (iOS only)
- *   Then rebuild the native app (this links a native module — JS-only
- *   reload will not pick it up).
- *
- * ── Carried over from the previous version (parser unchanged) ───────────────
- *  [1] Semester: reads "Semester :" label first — avoids "Admitted: 1st semester" false-match
- *  [2] Year: recognises "Acad. Year", "Academic Year", "A.Y.", "S.Y."
- *  [3] TTH parsing: compound-first day matching (Tue+Thu both captured)
- *  [4] Time: handles single-digit hours and packed formats
- *  [5] Section / Title / Units / Room: position-based + inline fallback extraction
- *  [6] NEW — Leading-digit OCR confusion: "1TD104" → "ITD104" ('1' misread for 'I'
- *      is a near-universal OCR failure mode, confirmed in real test output)
- *  [7] Image capture quality: compressImageQuality 0.98
+ * ── Update: Forgiving OCR Engine ─────────────────────────────────────────────
+ * [A] Distance-Based Deduplication: Prevents dropping STT071 at the bottom
+ * if STT071.1 at the top lost its decimal point during the scan.
+ * [B] Glued Text Bypass: Allows codes attached to symbols (ITE192*MACATO)
+ * [C] Glyph Auto-Correction: Fixes "1TE192" -> "ITE192" and "ITD1O4" -> "ITD104"
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -106,11 +85,10 @@ const DAY_COMPOUNDS: [string, string[]][] = [
   ['WF',     ['Wed', 'Fri']],
 ];
 
-/** Below this score, OCR output is treated as unreliable — likely wrong orientation. */
 const GOOD_SCORE_THRESHOLD = 15;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers — Day / Time parsing (unchanged from previous version)
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function parseDays(raw: string): string[] {
@@ -147,17 +125,6 @@ function normalizeTime(raw: string, ampmHint: string): string {
   return `${h.toString().padStart(2, '0')}:${mins} ${period}`;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// NEW: OCR Quality Scoring — used to auto-detect correct orientation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Scores how "COR-like" a block of OCR text looks. Validated thresholds:
- *   real upright COR text  → score ~80-150
- *   sideways/garbage text  → score ~0-10
- * Subject codes are weighted heaviest since they're the strongest, least
- * ambiguous signal that the OCR actually read the document correctly.
- */
 function scoreOcrQuality(text: string): number {
   const codeMatches = (text.match(/\b[A-Z]{2,4}\d{3}(?:\.\d)?\b/g) || []).length;
   const timeMatches  = (text.match(/\d{1,2}:\d{2}\s*[ap]m/gi) || []).length;
@@ -166,11 +133,6 @@ function scoreOcrQuality(text: string): number {
   return codeMatches * 10 + timeMatches * 5 + alphaRatio * 20;
 }
 
-/**
- * Rotates an image file by the given angle, producing a new file.
- * Always rotates from the ORIGINAL source (never chains rotations of
- * rotations) to avoid compounding JPEG re-encode quality loss.
- */
 async function rotateImageFile(
   sourceUri: string,
   angle: Rotation,
@@ -187,7 +149,7 @@ async function rotateImageFile(
     targetWidth,
     targetHeight,
     'JPEG',
-    100,            // no extra compression loss on top of the original capture
+    100,
     angle,
     undefined,
     false,
@@ -196,12 +158,6 @@ async function rotateImageFile(
   return result.uri;
 }
 
-/**
- * Tries OCR at the user's current/preferred orientation first (fast path —
- * most photos need no correction at all). Only tries the other three
- * orientations if that first attempt looks like noise, then keeps whichever
- * orientation scored best.
- */
 async function recognizeWithBestOrientation(
   originalUri: string,
   preferredAngle: Rotation,
@@ -227,10 +183,9 @@ async function recognizeWithBestOrientation(
         bestScore = score;
         best = { text: result.text, angle };
       }
-      // Fast path: the preferred orientation already looks correct — stop here.
       if (angle === preferredAngle && score >= GOOD_SCORE_THRESHOLD) break;
     } catch {
-      // Skip this orientation attempt; continue trying the others.
+      // Ignore
     }
   }
 
@@ -238,22 +193,19 @@ async function recognizeWithBestOrientation(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MAIN PARSER (unchanged logic, one added normalization rule — see [6])
+// MAIN PARSER
 // ─────────────────────────────────────────────────────────────────────────────
 
 function parseCorText(rawText: string): ParseResult {
-
   const text = rawText
     .replace(/\bOpm\b/g,   '0pm')
     .replace(/\bpn\b/gi,   'pm')
     .replace(/\barn\b/gi,  'am')
-    .replace(/\bSTTO\b/g,  'STT0')
-    .replace(/\bTD(\d{3})\b/g, 'ITD$1')
-    // [6] NEW: leading '1' misread for 'I' at the start of a subject code —
-    // confirmed in real OCR output ("1TD104" → "ITD104", "1TE193" → "ITE193").
-    // This confusion is near-universal across OCR engines (glyph similarity),
-    // not specific to any one recognizer.
-    .replace(/\b1([A-Z]{1,3}\d{3})\b/g, 'I$1')
+    .replace(/STTO/gi,     'STT0')
+    // Fix leading 1, l, or | misread as I (e.g., 1TE193 -> ITE193)
+    .replace(/\b[1l|]([A-Z]{2,3}\d{3})(?!\d)/gi, (_, p1) => 'I' + p1.toUpperCase())
+    // Fix letter O misread as zero in numbers (e.g. ITD1O4 -> ITD104)
+    .replace(/\b([A-Z]{2,4}[1-9])O(\d)(?!\d)/gi, (_, p1, p2) => p1.toUpperCase() + '0' + p2)
     .replace(/(\d{1,2}:\d{2})\s*[Aa][l1|][Mm]/g, '$1am')
     .replace(/(\d{1,2}:\d{2})\s*[Pp][l1|][Mm]/g, '$1pm')
     .replace(/[–—]/g, '-')
@@ -263,7 +215,6 @@ function parseCorText(rawText: string): ParseResult {
   const lines    = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   const fullText = lines.join(' ');
 
-  // Semester
   let detectedSemester: string | null = null;
   const semLabelMatch = fullText.match(
     /Semester\s*[:]\s*(first|1st|second|2nd|summer)\s*sem(?:ester)?/i
@@ -285,32 +236,36 @@ function parseCorText(rawText: string): ParseResult {
     }
   }
 
-  // Academic Year
   const yearMatch = fullText.match(
     /(?:A\.?Y\.?|S\.?Y\.?|Acad\.?\s+Year|Academic\s+Year)\s*[:–-]?\s*(\d{4}[-–]\d{4}|\d{4}[-–]\d{2})/i
   );
   const yearSuffix  = yearMatch ? `, ${yearMatch[1].replace('–', '-')}` : '';
   const academicTerm = detectedSemester ? `${detectedSemester}${yearSuffix}` : null;
 
-  // Subject Codes
-  const CODE_SRC = /\b([A-Z]{2,4})\s?(\d{3}(?:\.\d)?)\b/.source;
+  // NEW: Relaxed boundary allows codes glued to symbols (e.g. ITE192*MACATO)
+  const CODE_SRC = /\b([A-Z]{2,4})\s?(\d{3}(?:\.\d)?)(?!\d)/.source;
   const codeItems: { code: string; lineIndex: number }[] = [];
-  const seenCodes = new Set<string>();
 
   for (let i = 0; i < lines.length; i++) {
-    const local = new RegExp(CODE_SRC, 'g');
+    const local = new RegExp(CODE_SRC, 'gi');
     let m: RegExpExecArray | null;
     while ((m = local.exec(lines[i])) !== null) {
-      const prefix     = m[1];
+      const prefix     = m[1].toUpperCase();
       const normalized = `${prefix}${m[2]}`;
-      if (!NON_CODE_PREFIXES.has(prefix) && !seenCodes.has(normalized)) {
-        seenCodes.add(normalized);
-        codeItems.push({ code: normalized, lineIndex: i });
+
+      if (!NON_CODE_PREFIXES.has(prefix)) {
+        // NEW: Distance-based deduplication
+        // Only drops if the exact code was seen within 2 lines of this one.
+        // This ensures that STT071.1 (top) and STT071 (bottom) BOTH survive!
+        const isDuplicate = codeItems.some(c => c.code === normalized && Math.abs(c.lineIndex - i) <= 2);
+
+        if (!isDuplicate) {
+          codeItems.push({ code: normalized, lineIndex: i });
+        }
       }
     }
   }
 
-  // Time Ranges
   const TIME_SRC =
     /(\d{1,2}(?::\d{2})?)\s*([AaPp][Mm])?\s*[-–to]+\s*(\d{1,2}(?::\d{2})?)\s*([AaPp][Mm])/.source;
   const DAY_SRC =
@@ -342,14 +297,14 @@ function parseCorText(rawText: string): ParseResult {
   }
 
   const TIME_TEST_RE = /\d{1,2}:\d{2}/;
-  const CODE_TEST_RE = new RegExp(CODE_SRC);
+  const CODE_TEST_RE = new RegExp(CODE_SRC, 'i');
   const DAY_ONLY_RE  = new RegExp(`^(${DAY_SRC.slice(3, -4)})$`, 'i');
 
   function isValidRoom(t: string): boolean {
     return (
       t.length >= 2 && t.length <= 10 &&
       !t.includes(' ') &&
-      !seenCodes.has(t) &&
+      !codeItems.some(c => c.code === t.toUpperCase()) &&
       !ROOM_EXCLUDES.has(t.toUpperCase()) &&
       !DAY_ONLY_RE.test(t) &&
       !TIME_TEST_RE.test(t) &&
@@ -474,11 +429,9 @@ export function ScannerScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const mode   = route.params?.mode || 'camera';
 
-  // Original file from the picker — never mutated, used as the rotation source.
   const originalUriRef = useRef<string | null>(null);
   const [origDims,    setOrigDims]    = useState<{ w: number; h: number } | null>(null);
 
-  // What's currently shown to the user / what will be sent to OCR.
   const [displayUri,   setDisplayUri]   = useState<string | null>(null);
   const [rotationAngle, setRotationAngle] = useState<Rotation>(0);
 
@@ -508,7 +461,6 @@ export function ScannerScreen({ navigation, route }: any) {
       setRotationAngle(0);
       setDisplayUri(image.path);
 
-      // Capture natural dimensions up front — needed to size rotated output correctly.
       Image.getSize(
         image.path,
         (w, h) => setOrigDims({ w, h }),
@@ -522,7 +474,6 @@ export function ScannerScreen({ navigation, route }: any) {
     }
   };
 
-  /** Manual rotate — user-visible, immediate fix for sideways/upside-down photos. */
   const handleRotate = async () => {
     if (!originalUriRef.current || !origDims || isRotating) return;
     setIsRotating(true);
@@ -545,9 +496,6 @@ export function ScannerScreen({ navigation, route }: any) {
     setIsProcessing(true);
 
     try {
-      // Try the user's current orientation first (fast path). If it scores
-      // poorly — likely still sideways or upside-down — automatically test
-      // the other three orientations and keep whichever reads best.
       const { text, angle: bestAngle } = await recognizeWithBestOrientation(
         originalUriRef.current,
         rotationAngle,
@@ -555,8 +503,6 @@ export function ScannerScreen({ navigation, route }: any) {
         origDims.h,
       );
 
-      // If auto-detection found a better orientation than what's currently
-      // displayed, sync the UI state to match what was actually used.
       if (bestAngle !== rotationAngle) {
         setRotationAngle(bestAngle);
         const correctedUri = await rotateImageFile(
@@ -631,7 +577,6 @@ export function ScannerScreen({ navigation, route }: any) {
           resizeMode="contain"
         />
 
-        {/* Manual rotate control — overlaid top-right of the preview */}
         <TouchableOpacity
           style={styles.rotateButton}
           onPress={handleRotate}
@@ -675,10 +620,6 @@ export function ScannerScreen({ navigation, route }: any) {
     </View>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Styles
-// ─────────────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container:   { flex: 1, backgroundColor: '#121212' },
