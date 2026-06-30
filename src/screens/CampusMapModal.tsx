@@ -44,13 +44,12 @@ export function CampusMapModal({ visible, onClose, targetBuildingId }: CampusMap
     <Modal visible={visible} transparent animationType="slide">
       <View style={styles.overlay}>
 
-        {/* TOP APP BAR */}
-        <View style={[styles.header, { paddingTop: Math.max(insets.top, 20) + spacing.sm }]}>
-          <TouchableOpacity style={styles.closeButton} onPress={onClose} activeOpacity={0.7}>
-            <MaterialIcon name="arrow-back" size={24} color={palette.ink} />
+        {/* PERFECTLY ALIGNED TOP APP BAR */}
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 20) + spacing.md }]}>
+          <TouchableOpacity style={styles.backButton} onPress={onClose} activeOpacity={0.7}>
+            <MaterialIcon name="arrow-back" size={26} color={palette.ink} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>MSU Campus Map</Text>
-          <View style={{ width: 44 }} />
         </View>
 
         {/* COMING SOON CONTENT */}
@@ -80,45 +79,46 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: palette.bg
   },
+
+  // --- FIXED HEADER STYLES ---
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.md,
+    paddingHorizontal: spacing.xl,
+    paddingBottom: spacing.sm,
     backgroundColor: palette.bg,
-    borderBottomWidth: 1,
-    borderColor: palette.border,
     zIndex: 10
   },
-  closeButton: {
+  backButton: {
     width: 44,
     height: 44,
-    borderRadius: 22,
-    backgroundColor: palette.surface,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: palette.border
+    // Nudge the touchable box to the left so the physical arrow aligns optically with the 24px screen margin
+    marginLeft: -10,
+    marginRight: 6,
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: '700',
-    color: palette.ink
+    color: palette.ink,
+    letterSpacing: -0.5,
+    lineHeight: 28, // Forces the text box height to match, guaranteeing perfect vertical centering
   },
+  // ---------------------------
 
   contentContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: spacing.xxl,
-    paddingBottom: 80, // Push it slightly above vertical center
+    paddingBottom: 80,
   },
   iconCircle: {
     width: 140,
     height: 140,
     borderRadius: 70,
-    backgroundColor: 'rgba(197, 160, 89, 0.15)', // Tonal primary background
+    backgroundColor: 'rgba(197, 160, 89, 0.15)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.xl,

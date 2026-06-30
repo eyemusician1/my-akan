@@ -4,11 +4,11 @@ import {
   Text,
   View,
   TouchableOpacity,
-  LayoutAnimation,
   Platform,
-  UIManager,
   Modal,
-  DeviceEventEmitter
+  DeviceEventEmitter,
+  ScrollView,
+  Animated
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import withObservables from '@nozbe/with-observables';
@@ -17,10 +17,6 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { palette, spacing } from '../../../tokens';
 import { database } from '../../../core/database';
 import Subject from '../../../core/database/models/Subject';
-
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 const HOUR_HEIGHT = 60;
 const START_HOUR = 7;
@@ -57,19 +53,8 @@ const formatHour = (hour: number) => {
   return `${formatted} ${ampm}`;
 };
 
-const ExpandableEventCard = ({ item, onDelete }: { item: any, onDelete: () => void }) => {
-  const navigation = useNavigation<any>();
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  const toggleExpand = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setIsExpanded(!isExpanded);
-  };
-
-  const handleEdit = () => {
-    navigation.navigate('ManualEntry', { editSubjectId: item.id });
-  };
-
+// Clean, Flat M3 Event Card
+const EventCard = ({ item, onOptions }: { item: any, onOptions: () => void }) => {
   return (
     <View style={styles.eventRow}>
       <View style={styles.timeColumn}>
@@ -80,66 +65,49 @@ const ExpandableEventCard = ({ item, onDelete }: { item: any, onDelete: () => vo
       <TouchableOpacity
         style={[styles.eventCard, { backgroundColor: item.bgTint }]}
         activeOpacity={0.7}
-        onPress={toggleExpand}
+        onPress={onOptions}
       >
         <View style={styles.cardHeader}>
           <Text style={[styles.eventTitle, { color: item.themeColor }]} numberOfLines={1}>
             {item.code} {item.section ? `(${item.section})` : ''}
           </Text>
-          <MaterialIcon
-            name={isExpanded ? "keyboard-arrow-up" : "keyboard-arrow-down"}
-            size={20}
-            color={item.themeColor}
-            style={styles.chevronIcon}
-          />
+          <MaterialIcon name="more-vert" size={20} color={item.themeColor} style={{ opacity: 0.6 }} />
         </View>
 
-        <Text style={styles.eventSubtitle} numberOfLines={isExpanded ? undefined : 1}>
+        <Text style={styles.eventSubtitle} numberOfLines={1}>
           {item.title}
         </Text>
 
-        <Text style={styles.eventTimeRange}>
-          <Text style={styles.dayLabelHighlight}>{item.dayLabel}</Text> • {item.time} - {item.endTimeStr}
-        </Text>
+        <View style={styles.detailRow}>
+          <MaterialIcon name="schedule" size={14} color={item.themeColor} style={styles.detailIcon} />
+          <Text style={[styles.detailText, { color: item.themeColor }]} numberOfLines={1}>
+            <Text style={styles.dayLabelHighlight}>{item.dayLabel}</Text> • {item.time} - {item.endTimeStr}
+          </Text>
+        </View>
 
-        {isExpanded && (
-          <View style={styles.footerRow}>
-
-            <View style={styles.footerInfo}>
-              <View style={styles.footerItem}>
-                <MaterialIcon name="room" size={16} color={item.themeColor} style={styles.iconOp} />
-                <Text style={[styles.footerText, { color: item.themeColor }]} numberOfLines={1}>
-                  {item.room || 'TBA'}
-                </Text>
-              </View>
-
-              <View style={styles.footerItem}>
-                <MaterialIcon name="person" size={16} color={item.themeColor} style={styles.iconOp} />
-                <Text style={[styles.footerText, { color: item.themeColor }]} numberOfLines={1}>
-                  {item.instructor || 'TBA'}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.footerActions}>
-              <TouchableOpacity style={styles.actionBtn} onPress={handleEdit} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <MaterialIcon name="edit" size={18} color={palette.muted} />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.actionBtn} onPress={onDelete} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <MaterialIcon name="delete-outline" size={18} color={palette.muted} />
-              </TouchableOpacity>
-            </View>
-
-          </View>
-        )}
+        <View style={styles.detailRow}>
+          <MaterialIcon name="room" size={14} color={item.themeColor} style={styles.detailIcon} />
+          <Text style={[styles.detailText, { color: item.themeColor }]} numberOfLines={1}>
+            {item.room || 'TBA'} • {item.instructor || 'TBA'}
+          </Text>
+        </View>
       </TouchableOpacity>
     </View>
   );
 };
 
-const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
+const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLocateRoom?: (room: string) => void }) => {
+  const navigation = useNavigation<any>();
   const [viewMode, setViewMode] = useState<'agenda' | 'week'>('agenda');
+
+  // Custom Animation States for Action Sheet
+  const [actionSheetData, setActionSheetData] = useState<any>(null);
+  const actionSheetTranslateY = useRef(new Animated.Value(500)).current;
+  const actionSheetOpacity = useRef(new Animated.Value(0)).current;
+
+  // Controls Delete Confirmation Dialog
   const [itemToDelete, setItemToDelete] = useState<any>(null);
+
   const [tick, setTick] = useState(0);
   const prevSubjectsRef = useRef<any[] | null>(null);
 
@@ -229,9 +197,55 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
     .filter(item => item.days.includes(activeDay))
     .sort((a, b) => a.startTime - b.startTime);
 
+  // ==============================================================================
+  // SMOOTH CUSTOM ACTION SHEET ANIMATIONS
+  // ==============================================================================
+  const openActionSheet = (item: any) => {
+    setActionSheetData(item);
+    actionSheetTranslateY.setValue(500);
+    actionSheetOpacity.setValue(0);
+
+    Animated.parallel([
+      Animated.timing(actionSheetOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
+      Animated.spring(actionSheetTranslateY, { toValue: 0, tension: 65, friction: 9, useNativeDriver: true })
+    ]).start();
+  };
+
+  const closeActionSheet = (callback?: () => void) => {
+    Animated.parallel([
+      Animated.timing(actionSheetOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.timing(actionSheetTranslateY, { toValue: 500, duration: 200, useNativeDriver: true })
+    ]).start(() => {
+      setActionSheetData(null);
+      if (callback) callback();
+    });
+  };
+
+  const handleEditOption = () => {
+    if (actionSheetData) {
+      const targetId = actionSheetData.id;
+      // Close sheet gracefully before navigating
+      closeActionSheet(() => navigation.navigate('ManualEntry', { editSubjectId: targetId }));
+    }
+  };
+
+  const handleLocateOption = () => {
+    if (actionSheetData && onLocateRoom) {
+      const targetRoom = actionSheetData.room;
+      closeActionSheet(() => onLocateRoom(targetRoom));
+    }
+  };
+
+  const handleDeleteTrigger = () => {
+    if (actionSheetData) {
+      const targetItem = actionSheetData;
+      // Close sheet gracefully before opening the delete dialog
+      closeActionSheet(() => setItemToDelete(targetItem));
+    }
+  };
+
   const confirmDelete = async () => {
     if (!itemToDelete) return;
-
     try {
       await database.write(async () => {
         const subjectModel = itemToDelete.rawModel;
@@ -278,20 +292,8 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
     let renderedMorning = false;
     let renderedAfternoon = false;
 
-    const firstClassStart = agendaItems[0].startTime;
-    const lastClassEnd = agendaItems[agendaItems.length - 1].endTime;
-
     return (
       <View style={styles.eventsContainer}>
-        {firstClassStart >= 12 && (
-          <View style={styles.freeTimeWrapper}>
-            <View style={styles.freeTimePill}>
-              <MaterialIcon name="wb-sunny" size={14} color={palette.muted} />
-              <Text style={styles.freeTimeText}>Free morning</Text>
-            </View>
-          </View>
-        )}
-
         {agendaItems.map((item, index) => {
           let freeTimeIndicator = null;
           let sectionHeader = null;
@@ -299,17 +301,17 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
           if (item.startTime < 12 && !renderedMorning) {
             renderedMorning = true;
             sectionHeader = (
-              <View style={styles.timeSectionHeader}>
-                <MaterialIcon name="light-mode" size={14} color={palette.muted} />
+              <View style={[styles.timeSectionHeader, index === 0 ? { marginTop: 0 } : {}]}>
                 <Text style={styles.timeSectionText}>MORNING</Text>
+                <View style={styles.timeSectionLine} />
               </View>
             );
           } else if (item.startTime >= 12 && !renderedAfternoon) {
             renderedAfternoon = true;
             sectionHeader = (
-              <View style={styles.timeSectionHeader}>
-                <MaterialIcon name="dark-mode" size={14} color={palette.muted} />
+              <View style={[styles.timeSectionHeader, index === 0 ? { marginTop: 0 } : {}]}>
                 <Text style={styles.timeSectionText}>AFTERNOON</Text>
+                <View style={styles.timeSectionLine} />
               </View>
             );
           }
@@ -328,37 +330,24 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
 
               freeTimeIndicator = (
                 <View style={styles.freeTimeWrapper}>
-                  <View style={styles.freeTimePill}>
-                    <MaterialIcon name="local-cafe" size={14} color={palette.muted} />
-                    <Text style={styles.freeTimeText}>{gapText.trim()}</Text>
-                  </View>
+                  <View style={styles.freeTimeDashedLine} />
+                  <Text style={styles.freeTimeText}>{gapText.trim()}</Text>
                 </View>
               );
             }
           }
 
           return (
-            // FIX: Grouped mapped elements in a View with standard bottom margins instead of Fragments + gap.
-            // This prevents Android's touch delegate from misaligning the hit boxes.
             <View key={item.id} style={styles.agendaItemWrapper}>
               {sectionHeader}
               {freeTimeIndicator}
-              <ExpandableEventCard
+              <EventCard
                 item={item}
-                onDelete={() => setItemToDelete(item)}
+                onOptions={() => openActionSheet(item)}
               />
             </View>
           );
         })}
-
-        {lastClassEnd <= 12.5 && (
-          <View style={styles.freeTimeWrapper}>
-            <View style={styles.freeTimePill}>
-              <MaterialIcon name="park" size={14} color={palette.muted} />
-              <Text style={styles.freeTimeText}>Free whole afternoon</Text>
-            </View>
-          </View>
-        )}
       </View>
     );
   };
@@ -372,50 +361,53 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
         ))}
       </View>
 
-      <View style={styles.weekGrid}>
-        {DAYS.map((day) => (
-          <View key={day} style={styles.dayColumn}>
-            <View style={styles.dayHeader}>
-              <Text style={styles.dayHeaderText}>{day}</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ minWidth: '100%' }}>
+        <View style={styles.weekGrid}>
+          {DAYS.map((day) => (
+            <View key={day} style={styles.dayColumn}>
+              <View style={styles.dayHeader}>
+                <Text style={styles.dayHeaderText}>{day}</Text>
+              </View>
+
+              <View style={styles.dayGridArea}>
+                {HOURS.map((hour) => (
+                  <View key={hour} style={styles.gridLine} />
+                ))}
+
+                {liveSchedule
+                  .filter(item => item.days.includes(day))
+                  .map(item => {
+                    const topPosition = Math.max(0, (item.startTime - START_HOUR) * HOUR_HEIGHT);
+                    const cardHeight = Math.max(20, (item.endTime - item.startTime) * HOUR_HEIGHT);
+
+                    return (
+                      <TouchableOpacity
+                        key={`${item.id}-${day}`}
+                        activeOpacity={0.8}
+                        style={[
+                          styles.gridEventCard,
+                          {
+                            backgroundColor: item.bgTint,
+                            top: topPosition,
+                            height: cardHeight,
+                          }
+                        ]}
+                        onPress={() => openActionSheet(item)}
+                      >
+                        <Text style={[styles.gridEventTitle, { color: item.themeColor }]} numberOfLines={2}>
+                          {item.code}
+                        </Text>
+                        <Text style={[styles.gridEventTime, { color: item.themeColor }]} numberOfLines={1}>
+                          {item.room}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                })}
+              </View>
             </View>
-
-            <View style={styles.dayGridArea}>
-              {HOURS.map((hour) => (
-                <View key={hour} style={styles.gridLine} />
-              ))}
-
-              {liveSchedule
-                .filter(item => item.days.includes(day))
-                .map(item => {
-                  const topPosition = Math.max(0, (item.startTime - START_HOUR) * HOUR_HEIGHT);
-                  const cardHeight = Math.max(20, (item.endTime - item.startTime) * HOUR_HEIGHT);
-
-                  return (
-                    <TouchableOpacity
-                      key={`${item.id}-${day}`}
-                      activeOpacity={0.8}
-                      style={[
-                        styles.gridEventCard,
-                        {
-                          backgroundColor: item.bgTint,
-                          top: topPosition,
-                          height: cardHeight,
-                        }
-                      ]}
-                    >
-                      <Text style={[styles.gridEventTitle, { color: item.themeColor }]} numberOfLines={2}>
-                        {item.code}
-                      </Text>
-                      <Text style={[styles.gridEventTime, { color: item.themeColor }]} numberOfLines={1}>
-                        {item.room}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-              })}
-            </View>
-          </View>
-        ))}
-      </View>
+          ))}
+        </View>
+      </ScrollView>
     </View>
   );
 
@@ -442,8 +434,51 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
 
       {viewMode === 'agenda' ? renderAgenda() : renderWeek()}
 
-      <Modal visible={!!itemToDelete} transparent animationType="fade">
+      {/* ============================================================================== */}
+      {/* CUSTOM ANIMATED ACTION SHEET (Bypasses Android Modal Glitches) */}
+      {/* ============================================================================== */}
+      <Modal visible={!!actionSheetData} transparent animationType="none" hardwareAccelerated>
         <View style={styles.modalOverlay}>
+
+          {/* Animated Fade Backdrop */}
+          <Animated.View style={[StyleSheet.absoluteFillObject, { backgroundColor: 'rgba(0,0,0,0.4)', opacity: actionSheetOpacity }]}>
+            <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => closeActionSheet()} />
+          </Animated.View>
+
+          {/* Animated Slide-up Sheet */}
+          <Animated.View style={[styles.actionSheet, { transform: [{ translateY: actionSheetTranslateY }] }]}>
+            <View style={styles.dragHandle} />
+            <Text style={styles.actionSheetTitle}>
+              {actionSheetData?.code} {actionSheetData?.section ? `(${actionSheetData?.section})` : ''}
+            </Text>
+            <Text style={styles.actionSheetSub}>{actionSheetData?.title}</Text>
+
+            <View style={styles.actionSheetDivider} />
+
+            {onLocateRoom && (
+              <TouchableOpacity style={styles.actionRow} activeOpacity={0.7} onPress={handleLocateOption}>
+                <MaterialIcon name="place" size={24} color={palette.primary} style={styles.actionIcon} />
+                <Text style={[styles.actionText, { color: palette.primary }]}>View on Campus Map</Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity style={styles.actionRow} activeOpacity={0.7} onPress={handleEditOption}>
+              <MaterialIcon name="edit" size={24} color={palette.ink} style={styles.actionIcon} />
+              <Text style={styles.actionText}>Edit Class Details</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.actionRow} activeOpacity={0.7} onPress={handleDeleteTrigger}>
+              <MaterialIcon name="delete-outline" size={24} color="#D32F2F" style={styles.actionIcon} />
+              <Text style={[styles.actionText, { color: '#D32F2F' }]}>Remove Class</Text>
+            </TouchableOpacity>
+          </Animated.View>
+
+        </View>
+      </Modal>
+
+      {/* DELETE CONFIRMATION DIALOG */}
+      <Modal visible={!!itemToDelete} transparent animationType="fade" hardwareAccelerated>
+        <View style={styles.modalOverlayCenter}>
           <View style={styles.dialogBox}>
             <Text style={styles.dialogTitle}>Remove class?</Text>
             <Text style={styles.dialogMessage}>
@@ -474,7 +509,7 @@ export const ScheduleView = withObservables([], () => ({
 
 const styles = StyleSheet.create({
   container: { marginTop: spacing.sm },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg, paddingHorizontal: spacing.xs },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md, paddingHorizontal: spacing.xs },
   dateText: { fontSize: 18, fontWeight: '700', color: palette.ink },
   toggleWrapper: { flexDirection: 'row', backgroundColor: 'rgba(28, 28, 30, 0.05)', borderRadius: 20, padding: 4 },
   toggleButton: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
@@ -485,43 +520,47 @@ const styles = StyleSheet.create({
   sundayTitle: { fontSize: 22, fontWeight: '700', color: palette.ink, marginBottom: 8 },
   sundayMessage: { fontSize: 14, color: palette.body, textAlign: 'center', lineHeight: 22, paddingHorizontal: 10 },
 
-  eventsContainer: { paddingBottom: 8 },
-  agendaItemWrapper: { marginBottom: 16 },
+  eventsContainer: { paddingBottom: 16 },
+  agendaItemWrapper: { marginBottom: 10 },
+
   eventRow: { flexDirection: 'row', alignItems: 'flex-start' },
-  timeColumn: { width: 68, paddingTop: 12, paddingRight: spacing.md },
-  timeText: { fontSize: 15, fontWeight: '600', color: palette.ink, textAlign: 'right' },
-  amPmText: { fontSize: 13, fontWeight: '500', color: palette.muted, textAlign: 'right', marginTop: 2 },
+  timeColumn: { width: 62, paddingTop: 14, paddingRight: spacing.sm },
+  timeText: { fontSize: 14, fontWeight: '700', color: palette.ink, textAlign: 'right' },
+  amPmText: { fontSize: 11, fontWeight: '600', color: palette.muted, textAlign: 'right', marginTop: 2, letterSpacing: 0.5 },
 
-  // FIX: overflow: 'hidden' ensures LayoutAnimation stays inside boundaries
-  eventCard: { flex: 1, borderRadius: 24, padding: 18, overflow: 'hidden' },
+  eventCard: { flex: 1, borderRadius: 22, padding: 16 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 },
+  eventTitle: { flex: 1, fontSize: 17, fontWeight: '700', letterSpacing: -0.2, marginRight: spacing.sm },
+  eventSubtitle: { fontSize: 14, color: palette.ink, fontWeight: '500', marginBottom: 10, opacity: 0.8 },
 
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 },
-  eventTitle: { flex: 1, fontSize: 18, fontWeight: '700', letterSpacing: -0.2, marginRight: spacing.sm },
-  chevronIcon: { opacity: 0.5, marginTop: 2 },
-  eventSubtitle: { fontSize: 15, color: palette.ink, fontWeight: '600', marginBottom: 6, opacity: 0.85 },
+  detailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  detailIcon: { marginRight: 6, opacity: 0.7 },
+  detailText: { flex: 1, fontSize: 13, fontWeight: '500', opacity: 0.85 },
   dayLabelHighlight: { fontWeight: '700' },
-  eventTimeRange: { fontSize: 14, color: palette.ink, opacity: 0.7, fontWeight: '500' },
-
-  footerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderColor: 'rgba(0,0,0,0.05)' },
-  footerInfo: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingRight: 10, overflow: 'hidden' },
-  footerItem: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  iconOp: { opacity: 0.8 },
-  footerText: { flexShrink: 1, fontSize: 13, fontWeight: '600', opacity: 0.85 },
-  footerActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flexShrink: 0 },
-
-  actionBtn: { padding: 4, backgroundColor: 'rgba(0,0,0,0.04)', borderRadius: 8 },
 
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
   emptyStateText: { marginTop: 12, fontSize: 15, color: palette.muted, fontWeight: '500' },
 
-  timeSectionHeader: { flexDirection: 'row', alignItems: 'center', paddingLeft: 68 + spacing.sm, marginTop: spacing.xs, marginBottom: spacing.xs },
-  timeSectionText: { fontSize: 11, fontWeight: '700', color: palette.muted, marginLeft: 6, letterSpacing: 0.8 },
+  timeSectionHeader: { flexDirection: 'row', alignItems: 'center', paddingLeft: 62, marginTop: 14, marginBottom: 10 },
+  timeSectionText: { fontSize: 11, fontWeight: '700', color: palette.muted, letterSpacing: 1, marginRight: 12 },
+  timeSectionLine: { flex: 1, height: 1, backgroundColor: palette.border },
 
-  freeTimeWrapper: { paddingLeft: 68 + spacing.sm, paddingVertical: 2, alignItems: 'flex-start' },
-  freeTimePill: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(28, 28, 30, 0.04)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
-  freeTimeText: { fontSize: 12, fontWeight: '600', color: palette.muted, marginLeft: 6 },
+  freeTimeWrapper: { flexDirection: 'row', alignItems: 'center', paddingLeft: 62, marginVertical: 6 },
+  freeTimeDashedLine: { width: 2, height: 16, borderLeftWidth: 1, borderStyle: 'dashed', borderColor: palette.muted, opacity: 0.5, marginHorizontal: 8 },
+  freeTimeText: { fontSize: 12, fontWeight: '500', color: palette.muted, fontStyle: 'italic' },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.4)', justifyContent: 'center', padding: spacing.xl },
+  // NEW ACTION SHEET STYLES
+  modalOverlay: { flex: 1, justifyContent: 'flex-end' },
+  modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.4)', justifyContent: 'center', padding: spacing.xl },
+  actionSheet: { backgroundColor: palette.surface, borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: spacing.xl, paddingBottom: Platform.OS === 'ios' ? 40 : 24, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 16 },
+  dragHandle: { width: 36, height: 5, borderRadius: 3, backgroundColor: palette.border, alignSelf: 'center', marginBottom: spacing.lg },
+  actionSheetTitle: { fontSize: 20, fontWeight: '700', color: palette.ink, marginBottom: 4 },
+  actionSheetSub: { fontSize: 14, color: palette.muted, fontWeight: '500', marginBottom: 16 },
+  actionSheetDivider: { height: 1, backgroundColor: palette.border, marginBottom: 8 },
+  actionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16 },
+  actionIcon: { marginRight: spacing.md },
+  actionText: { fontSize: 16, fontWeight: '600', color: palette.ink },
+
   dialogBox: { backgroundColor: palette.surface, borderRadius: 28, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 8 },
   dialogTitle: { fontSize: 22, fontWeight: '600', color: palette.ink, marginBottom: 14 },
   dialogMessage: { fontSize: 15, color: palette.body, lineHeight: 22, marginBottom: 28 },
@@ -530,12 +569,12 @@ const styles = StyleSheet.create({
   dialogBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
   dialogBtnText: { fontSize: 15, fontWeight: '600' },
 
-  weekGridWrapper: { flexDirection: 'row', borderTopWidth: 1, borderColor: palette.border, paddingTop: spacing.sm },
-  timeAxis: { width: 44 },
+  weekGridWrapper: { flex: 1, borderTopWidth: 1, borderColor: palette.border, paddingTop: spacing.sm },
+  timeAxis: { width: 44, position: 'absolute', left: 0, top: spacing.sm, bottom: 0, backgroundColor: palette.bg, zIndex: 10, borderRightWidth: 1, borderColor: palette.border },
   dayHeaderSpacer: { height: 36 },
   gridTimeLabel: { height: HOUR_HEIGHT, fontSize: 11, fontWeight: '500', color: palette.muted, textAlign: 'right', paddingRight: 6, top: -8 },
-  weekGrid: { flex: 1, flexDirection: 'row' },
-  dayColumn: { flex: 1, borderRightWidth: 1, borderColor: palette.border },
+  weekGrid: { flexDirection: 'row', paddingLeft: 44 },
+  dayColumn: { width: 80, borderRightWidth: 1, borderColor: palette.border },
   dayHeader: { height: 36, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 1, borderColor: palette.border },
   dayHeaderText: { fontSize: 12, fontWeight: '600', color: palette.ink },
   dayGridArea: { position: 'relative', height: HOURS.length * HOUR_HEIGHT },

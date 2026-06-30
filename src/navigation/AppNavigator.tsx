@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { View, StyleSheet, Animated, Image, Text } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { CommonActions } from '@react-navigation/native'; // Added to reset navigation stack
 
 import { palette } from '../tokens';
 import { WelcomeScreen } from '../screens/WelcomeScreen';
@@ -11,7 +12,6 @@ import { ManualEntryScreen } from '../screens/ManualEntryScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { ScannerScreen } from '../screens/ScannerScreen';
 import { RecentSchedulesScreen } from '../screens/RecentSchedulesScreen';
-// --- NEW IMPORT FOR THE FINANCE PAGE ---
 import { PaymentsScreen } from '../screens/PaymentsScreen';
 
 const Stack = createNativeStackNavigator();
@@ -79,7 +79,15 @@ export function AppNavigator() {
             {(props) => (
               <NamePromptScreen
                 {...props}
-                onComplete={() => props.navigation.replace('Home')}
+                // FIX: Completely reset the stack so the user cannot press 'Back' to return to Welcome
+                onComplete={() =>
+                  props.navigation.dispatch(
+                    CommonActions.reset({
+                      index: 0,
+                      routes: [{ name: 'Home' }],
+                    })
+                  )
+                }
               />
             )}
           </Stack.Screen>
@@ -89,8 +97,6 @@ export function AppNavigator() {
           <Stack.Screen name="Profile" component={ProfileScreen} />
           <Stack.Screen name="Scanner" component={ScannerScreen} />
           <Stack.Screen name="RecentSchedules" component={RecentSchedulesScreen} />
-
-          {/* --- REGISTERED FINANCE SCREEN --- */}
           <Stack.Screen name="Finance" component={PaymentsScreen} />
 
         </Stack.Navigator>
