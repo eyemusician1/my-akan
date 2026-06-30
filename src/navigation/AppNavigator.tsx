@@ -2,11 +2,12 @@ import React, { useEffect, useState, useRef } from 'react';
 import { View, StyleSheet, Animated, Image, Text } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { CommonActions } from '@react-navigation/native'; // Added to reset navigation stack
+import { CommonActions } from '@react-navigation/native';
 
 import { palette } from '../tokens';
 import { WelcomeScreen } from '../screens/WelcomeScreen';
 import { NamePromptScreen } from '../screens/NamePromptScreen';
+import { YearPromptScreen } from '../screens/YearPromptScreen'; // <-- NEW IMPORT
 import { HomeScreen } from '../screens/HomeScreen';
 import { ManualEntryScreen } from '../screens/ManualEntryScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
@@ -26,17 +27,20 @@ export function AppNavigator() {
   useEffect(() => {
     const prepareApp = async () => {
       try {
-        // Run the storage check AND a minimum 1.5-second timer simultaneously.
-        // This guarantees the beautiful splash screen is seen by the user before vanishing.
-        const [storedName] = await Promise.all([
+        // Run the storage checks AND a minimum 1.5-second timer simultaneously.
+        const [storedName, storedYear] = await Promise.all([
           AsyncStorage.getItem('@user_name'),
+          AsyncStorage.getItem('@user_year'), // <-- CHECK FOR YEAR TOO
           new Promise(resolve => setTimeout(resolve, 1500))
         ]);
 
-        if (storedName) {
-          setInitialRoute('Home');
+        // SMART ROUTING:
+        if (storedName && storedYear) {
+          setInitialRoute('Home'); // Fully onboarded
+        } else if (storedName && !storedYear) {
+          setInitialRoute('YearPrompt'); // Recovers if they quit halfway through setup!
         } else {
-          setInitialRoute('Welcome');
+          setInitialRoute('Welcome'); // Completely new user
         }
 
         // Trigger the smooth Google-style fade out
@@ -62,7 +66,6 @@ export function AppNavigator() {
     <View style={styles.container}>
 
       {/* --- Main App Navigator --- */}
-      {/* Renders silently in the background while the splash screen is visible */}
       {initialRoute !== null && (
         <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false }}>
 
@@ -79,7 +82,18 @@ export function AppNavigator() {
             {(props) => (
               <NamePromptScreen
                 {...props}
-                // FIX: Completely reset the stack so the user cannot press 'Back' to return to Welcome
+                // CHANGED: Now navigates to YearPrompt instead of Home
+                onComplete={() => props.navigation.navigate('YearPrompt')}
+              />
+            )}
+          </Stack.Screen>
+
+          {/* --- NEW YEAR PROMPT SCREEN ROUTE --- */}
+          <Stack.Screen name="YearPrompt">
+            {(props) => (
+              <YearPromptScreen
+                {...props}
+                // FIX: Completely reset the stack so the user cannot press 'Back' to return to onboarding
                 onComplete={() =>
                   props.navigation.dispatch(
                     CommonActions.reset({

@@ -1,6 +1,7 @@
 import React from 'react';
-import { StyleSheet, Text, View, Pressable, ImageBackground, Image } from 'react-native';
-// CHANGED: Pointing to the index file instead of colors.ts
+import { StyleSheet, Text, View, Pressable, Image, ImageBackground, StatusBar } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import { palette, spacing } from '../tokens';
 
 interface WelcomeScreenProps {
@@ -8,13 +9,24 @@ interface WelcomeScreenProps {
 }
 
 export function WelcomeScreen({ onGetStarted }: WelcomeScreenProps) {
+  const insets = useSafeAreaInsets();
+
   return (
     <ImageBackground
-      source={require('../../assets/images/loginBG.png')}
+      source={require('../../assets/images/loginbg9.png')}
       style={styles.background}
       resizeMode="cover"
     >
-      <View style={styles.container}>
+      {/* FIX: The StatusBar must be inside the return statement to work!
+        This forces the time/battery icons to be white and transparent.
+      */}
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
+
+      {/*
+        This overlay darkens the background image slightly.
+        It is the industry standard way to guarantee text readability!
+      */}
+      <View style={[styles.overlay, { paddingTop: Math.max(insets.top, 40) + spacing.xl }]}>
 
         {/* Top Header Section */}
         <View style={styles.headerContainer}>
@@ -26,18 +38,18 @@ export function WelcomeScreen({ onGetStarted }: WelcomeScreenProps) {
           <Text style={styles.headerTitle}>Trakn</Text>
         </View>
 
-        {/* Centered Hero Section */}
+        {/* Left-Aligned Minimalist Hero Section */}
         <View style={styles.contentContainer}>
-          <Text style={styles.headlineWhite}>Own your schedule.</Text>
-          <Text style={styles.headlineGold}>Track it offline.</Text>
+          <Text style={styles.headline}>Own your schedule.</Text>
+          <Text style={[styles.headline, styles.headlineHighlight]}>Track it offline.</Text>
 
           <Text style={styles.subtitle}>
             Scan your COR to instantly build a smart timeline. Track subjects, rooms, and dues anywhere—no internet required.
           </Text>
         </View>
 
-        {/* Bottom Action Section */}
-        <View style={styles.actionContainer}>
+        {/* Prominent Bottom Action Section */}
+        <View style={[styles.actionContainer, { paddingBottom: Math.max(insets.bottom, 20) + spacing.lg }]}>
           <Pressable
             onPress={onGetStarted}
             style={({ pressed }) => [
@@ -59,12 +71,11 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
   },
-  container: {
+  // Contrast protector overlay
+  overlay: {
     flex: 1,
-    justifyContent: 'space-between',
+    backgroundColor: 'rgba(0, 0, 0, 0.1)',
     paddingHorizontal: spacing.xl,
-    paddingTop: spacing.xxl * 1.5,
-    paddingBottom: spacing.xxl,
   },
 
   // Header Styles
@@ -73,59 +84,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerLogo: {
-    width: 28,
-    height: 28,
+    width: 32,
+    height: 32,
     marginRight: spacing.sm,
   },
   headerTitle: {
     fontSize: 22,
-    fontWeight: '600',
-    color: palette.surface,
+    fontWeight: '700',
+    color: palette.surface, // Kept white to pop against the dark background
     letterSpacing: -0.5,
   },
 
-  // Centered Content Styles
+  // Left-Aligned Content Styles
   contentContainer: {
     flex: 1,
     justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: spacing.sm,
+    alignItems: 'flex-start',
   },
-  headlineWhite: {
-    fontSize: 48,
-    fontWeight: '700',
+  headline: {
+    fontSize: 46,
+    fontWeight: '800',
     color: palette.surface,
     letterSpacing: -1.5,
-    textAlign: 'center',
     lineHeight: 52,
   },
-  headlineGold: {
-    fontSize: 48,
-    fontWeight: '700',
-    color: palette.secondary,
-    letterSpacing: -1.5,
-    textAlign: 'center',
-    lineHeight: 52,
-    marginBottom: spacing.xl,
+  headlineHighlight: {
+    color: palette.secondary, // Warm gold/secondary color from your palette
+    marginBottom: spacing.lg,
   },
   subtitle: {
-    fontSize: 18,
+    fontSize: 16,
     color: 'rgba(255, 255, 255, 0.85)',
-    lineHeight: 28,
-    fontWeight: '400',
-    textAlign: 'center',
-    paddingHorizontal: spacing.md,
+    lineHeight: 26,
+    fontWeight: '500',
+    paddingRight: spacing.xl,
   },
 
   // Action Button Styles
   actionContainer: {
-    alignItems: 'center',
     width: '100%',
-    paddingBottom: spacing.md,
   },
   button: {
-    backgroundColor: palette.ink,
-    paddingHorizontal: 48,
+    width: '100%',
+    backgroundColor: palette.surface, // Clean white button
     height: 60,
     borderRadius: 30,
     justifyContent: 'center',
@@ -134,16 +135,16 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
-    shadowRadius: 8,
+    shadowRadius: 12,
   },
   buttonPressed: {
-    transform: [{ scale: 0.96 }],
+    transform: [{ scale: 0.98 }],
     opacity: 0.9,
   },
   buttonText: {
-    color: palette.surface,
+    color: palette.ink, // Dark text on the white button
     fontSize: 18,
-    fontWeight: '600',
-    letterSpacing: 0.25,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
 });
