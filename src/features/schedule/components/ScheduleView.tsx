@@ -1,4 +1,4 @@
-import React, { useState, Fragment, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -105,7 +105,6 @@ const ExpandableEventCard = ({ item, onDelete }: { item: any, onDelete: () => vo
         {isExpanded && (
           <View style={styles.footerRow}>
 
-            {/* RESOLVED OVERLAPPING: Flex 1 + flexShrink traps long text gracefully */}
             <View style={styles.footerInfo}>
               <View style={styles.footerItem}>
                 <MaterialIcon name="room" size={16} color={item.themeColor} style={styles.iconOp} />
@@ -339,14 +338,16 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
           }
 
           return (
-            <Fragment key={item.id}>
+            // FIX: Grouped mapped elements in a View with standard bottom margins instead of Fragments + gap.
+            // This prevents Android's touch delegate from misaligning the hit boxes.
+            <View key={item.id} style={styles.agendaItemWrapper}>
               {sectionHeader}
               {freeTimeIndicator}
               <ExpandableEventCard
                 item={item}
                 onDelete={() => setItemToDelete(item)}
               />
-            </Fragment>
+            </View>
           );
         })}
 
@@ -441,7 +442,6 @@ const ScheduleViewUI = ({ subjects }: { subjects: Subject[] }) => {
 
       {viewMode === 'agenda' ? renderAgenda() : renderWeek()}
 
-      {/* ICONLESS CLEAN GOOGLE M3 DIALOG */}
       <Modal visible={!!itemToDelete} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.dialogBox}>
@@ -485,12 +485,16 @@ const styles = StyleSheet.create({
   sundayTitle: { fontSize: 22, fontWeight: '700', color: palette.ink, marginBottom: 8 },
   sundayMessage: { fontSize: 14, color: palette.body, textAlign: 'center', lineHeight: 22, paddingHorizontal: 10 },
 
-  eventsContainer: { gap: 16 },
+  eventsContainer: { paddingBottom: 8 },
+  agendaItemWrapper: { marginBottom: 16 },
   eventRow: { flexDirection: 'row', alignItems: 'flex-start' },
   timeColumn: { width: 68, paddingTop: 12, paddingRight: spacing.md },
   timeText: { fontSize: 15, fontWeight: '600', color: palette.ink, textAlign: 'right' },
   amPmText: { fontSize: 13, fontWeight: '500', color: palette.muted, textAlign: 'right', marginTop: 2 },
-  eventCard: { flex: 1, borderRadius: 24, padding: 18 },
+
+  // FIX: overflow: 'hidden' ensures LayoutAnimation stays inside boundaries
+  eventCard: { flex: 1, borderRadius: 24, padding: 18, overflow: 'hidden' },
+
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 },
   eventTitle: { flex: 1, fontSize: 18, fontWeight: '700', letterSpacing: -0.2, marginRight: spacing.sm },
   chevronIcon: { opacity: 0.5, marginTop: 2 },
@@ -498,7 +502,6 @@ const styles = StyleSheet.create({
   dayLabelHighlight: { fontWeight: '700' },
   eventTimeRange: { fontSize: 14, color: palette.ink, opacity: 0.7, fontWeight: '500' },
 
-  // Updated Footer Flexbox Shrink Barrier
   footerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderColor: 'rgba(0,0,0,0.05)' },
   footerInfo: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingRight: 10, overflow: 'hidden' },
   footerItem: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 4 },

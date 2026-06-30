@@ -70,7 +70,6 @@ const ProfileScreenUI = ({ navigation, subjects, schedules }: ProfileScreenProps
 
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isCollegePickerOpen, setIsCollegePickerOpen] = useState(false);
-  const [isYearPickerOpen, setIsYearPickerOpen] = useState(false);
 
   const [collegeSearch, setCollegeSearch] = useState('');
   const [editForm, setEditForm] = useState(profile);
@@ -236,6 +235,13 @@ const ProfileScreenUI = ({ navigation, subjects, schedules }: ProfileScreenProps
             <MaterialIcon name="chevron-right" size={24} color={palette.muted} />
           </TouchableOpacity>
         </View>
+
+        {/* --- SUBTLE ABOUT / CREDIT FOOTER --- */}
+        <View style={styles.footerContainer}>
+          <Text style={styles.footerBrand}>Trakn Workspace v1.0</Text>
+          <Text style={styles.footerCredit}>Developed by Sayr</Text>
+        </View>
+
       </ScrollView>
 
       {/* --- M3 FULL SCREEN EDIT MODAL --- */}
@@ -411,11 +417,32 @@ const styles = StyleSheet.create({
   inlineDropdownTrigger: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: 'rgba(28,28,30,0.04)', borderRadius: 16, marginLeft: -16 },
   textMuted: { color: palette.muted },
 
-  optionsContainer: { backgroundColor: palette.surface, borderRadius: 28, paddingHorizontal: spacing.lg, paddingVertical: 8, marginBottom: spacing.xxl },
+  optionsContainer: { backgroundColor: palette.surface, borderRadius: 28, paddingHorizontal: spacing.lg, paddingVertical: 8, marginBottom: spacing.xl },
   optionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 18 },
   optionLeft: { flexDirection: 'row', alignItems: 'center' },
   optionText: { fontSize: 17, fontWeight: '600', color: palette.ink, marginLeft: spacing.md },
   horizontalDivider: { height: 1, backgroundColor: palette.border, marginLeft: 46 },
+
+  // --- SUBTLE FOOTER STYLES ---
+  footerContainer: {
+    alignItems: 'center',
+    paddingVertical: spacing.lg,
+    marginTop: spacing.sm,
+  },
+  footerBrand: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: palette.muted,
+    opacity: 0.8,
+    marginBottom: 2,
+  },
+  footerCredit: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: palette.muted,
+    opacity: 0.6,
+    letterSpacing: 0.3,
+  },
 
   // --- M3 FULL SCREEN EDIT MODAL ---
   modalOverlayEdit: { flex: 1, backgroundColor: palette.bg, justifyContent: 'flex-end' },

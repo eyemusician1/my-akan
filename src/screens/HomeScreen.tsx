@@ -23,6 +23,9 @@ import { database } from '../core/database';
 import Schedule from '../core/database/models/Schedule';
 import Subject from '../core/database/models/Subject';
 
+// Import our offline schematic map modal and parser
+import { CampusMapModal, locateBuildingByRoom } from './CampusMapModal';
+
 const getTimeAgo = (dateInput: any) => {
   if (!dateInput) return 'Just now';
   const date = new Date(dateInput);
@@ -45,12 +48,6 @@ const getTimeAgo = (dateInput: any) => {
 const ScheduleCardItemUI = ({ schedule, subjects }: { schedule: Schedule, subjects: Subject[] }) => {
   const navigation = useNavigation<any>();
   const subjectCount = subjects.length;
-  const [ticker, setTicker] = useState(0);
-
-  useEffect(() => {
-    const timer = setInterval(() => setTicker(t => t + 1), 20000);
-    return () => clearInterval(timer);
-  }, []);
 
   if (subjectCount === 0) {
     return (
@@ -107,12 +104,46 @@ const RecentScheduleWrapper = withObservables([], () => ({
   schedules: database.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).observe(),
 }))(RecentScheduleListUI);
 
+// ============================================================================
+// ARCHIVED SCHEDULES ENGINE
+// Skips the latest schedule (index 0) and maps the rest as past semesters
+// ============================================================================
+const ArchivedScheduleListUI = ({ schedules }: { schedules: Schedule[] }) => {
+  const archivedSchedules = schedules.slice(1);
+
+  if (archivedSchedules.length === 0) {
+    return (
+      <View style={styles.emptyState}>
+        <MaterialIcon name="archive" size={32} color={palette.muted} />
+        <Text style={styles.emptyStateTitle}>No archived records</Text>
+        <Text style={styles.emptyStateSub}>Past semesters will safely be stored here.</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ gap: 12 }}>
+      {archivedSchedules.map(schedule => (
+        <EnhancedScheduleCardItem key={schedule.id} schedule={schedule} />
+      ))}
+    </View>
+  );
+};
+
+const ArchivedSchedulesWrapper = withObservables([], () => ({
+  schedules: database.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).observe(),
+}))(ArchivedScheduleListUI);
+
 
 export function HomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const [activeFilter, setActiveFilter] = useState('Recent');
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [userName, setUserName] = useState('');
+
+  // --- MAP MODAL STATES ---
+  const [isMapModalVisible, setIsMapModalVisible] = useState(false);
+  const [targetBuildingId, setTargetBuildingId] = useState<string | null>(null);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
@@ -171,12 +202,20 @@ export function HomeScreen({ navigation }: any) {
     }).start();
   }, [isFabOpen]);
 
+  // --- UPGRADED 4-ITEM FAB INTERPOLATIONS ---
   const item1TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [20, 0] });
   const item2TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [40, 0] });
   const item3TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [60, 0] });
+  const item4TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [80, 0] });
   const itemScale = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1] });
 
   const fabRotate = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '45deg'] });
+
+  const handleOpenMap = (roomString?: string | null) => {
+    const bId = locateBuildingByRoom(roomString);
+    setTargetBuildingId(bId);
+    setIsMapModalVisible(true);
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -259,8 +298,6 @@ export function HomeScreen({ navigation }: any) {
                 pressed && styles.pressedState
               ]}
               onPress={() => {
-                // INTERCEPT: If they tap Payments, open the Finance screen.
-                // Otherwise, safely swap the local tab filter.
                 if (filter === 'Payments') {
                   navigation.navigate('Finance');
                 } else {
@@ -285,8 +322,12 @@ export function HomeScreen({ navigation }: any) {
         )}
         scrollEventThrottle={16}
       >
+        {/* TAB ROUTING ENGINE */}
         {activeFilter === 'Recent' && <RecentScheduleWrapper />}
-        {activeFilter === 'Schedules' && <ScheduleView />}
+        {activeFilter === 'Schedules' && (
+          <ScheduleView onLocateRoom={(room: string) => handleOpenMap(room)} />
+        )}
+        {activeFilter === 'Archived' && <ArchivedSchedulesWrapper />}
       </Animated.ScrollView>
 
       <Animated.View
@@ -308,6 +349,22 @@ export function HomeScreen({ navigation }: any) {
       >
         <View style={styles.fabMenuContainer} pointerEvents={isFabOpen ? 'auto' : 'none'}>
 
+          {/* ITEM 4: CAMPUS MAP DIRECTORY */}
+          <Animated.View style={{ opacity: fabAnimation, transform: [{ translateY: item4TranslateY }, { scale: itemScale }] }}>
+            <TouchableOpacity
+              style={styles.fabPill}
+              activeOpacity={0.8}
+              onPress={() => {
+                setIsFabOpen(false);
+                handleOpenMap(null); // Opens general campus overview
+              }}
+            >
+              <MaterialIcon name="map" size={20} color={palette.primary} />
+              <Text style={styles.fabPillText}>Campus Map</Text>
+            </TouchableOpacity>
+          </Animated.View>
+
+          {/* ITEM 3: SCAN COR (CAMERA) */}
           <Animated.View style={{ opacity: fabAnimation, transform: [{ translateY: item3TranslateY }, { scale: itemScale }] }}>
             <TouchableOpacity
               style={styles.fabPill}
@@ -322,6 +379,7 @@ export function HomeScreen({ navigation }: any) {
             </TouchableOpacity>
           </Animated.View>
 
+          {/* ITEM 2: UPLOAD COR IMAGE */}
           <Animated.View style={{ opacity: fabAnimation, transform: [{ translateY: item2TranslateY }, { scale: itemScale }] }}>
             <TouchableOpacity
               style={styles.fabPill}
@@ -336,6 +394,7 @@ export function HomeScreen({ navigation }: any) {
             </TouchableOpacity>
           </Animated.View>
 
+          {/* ITEM 1: MANUAL ENTRY */}
           <Animated.View style={{ opacity: fabAnimation, transform: [{ translateY: item1TranslateY }, { scale: itemScale }] }}>
             <TouchableOpacity
               style={styles.fabPill}
@@ -360,7 +419,14 @@ export function HomeScreen({ navigation }: any) {
 
       </Animated.View>
 
-      {/* MASTER ROOT TOAST (Hovers 18px above the circular FAB) */}
+      {/* OFFLINE SCHEMATIC MAP MODAL */}
+      <CampusMapModal
+        visible={isMapModalVisible}
+        onClose={() => setIsMapModalVisible(false)}
+        targetBuildingId={targetBuildingId}
+      />
+
+      {/* MASTER ROOT TOAST */}
       {toastMessage && (
         <Animated.View
           style={[
@@ -421,7 +487,6 @@ const styles = StyleSheet.create({
   fabPillText: { fontSize: 15, fontWeight: '600', color: palette.ink, marginLeft: spacing.sm },
   mainFab: { width: 66, height: 66, borderRadius: 22, backgroundColor: palette.primary, justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: palette.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 16 },
 
-  // Master Root Toast Styles
   toastRootContainer: { position: 'absolute', left: 0, right: 0, alignItems: 'center', zIndex: 9999, pointerEvents: 'none' },
   toastPill: { backgroundColor: palette.ink, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 6 },
   toastText: { color: palette.surface, fontSize: 13, fontWeight: '600', letterSpacing: 0.2 },
