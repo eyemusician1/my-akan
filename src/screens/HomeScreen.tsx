@@ -263,7 +263,7 @@ export function HomeScreen({ navigation }: any) {
       <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
         <View style={styles.headerLeft}>
           <Image
-            source={require('../../assets/images/msuLogo.png')}
+            source={require('../../assets/images/TraknLogo2.png')}
             style={styles.logo}
             resizeMode="contain"
           />

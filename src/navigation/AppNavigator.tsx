@@ -121,7 +121,7 @@ export function AppNavigator() {
         <Animated.View style={[styles.splashScreen, { opacity: fadeAnim }]}>
           <View style={styles.splashCenter}>
             <Image
-              source={require('../../assets/images/msuLogo.png')}
+              source={require('../../assets/images/TraknLogo2.png')}
               style={styles.logo}
               resizeMode="contain"
             />
@@ -143,11 +143,11 @@ const styles = StyleSheet.create({
   },
   splashScreen: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: palette.bg,
+    backgroundColor: palette.white,
     zIndex: 999,
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 60,
+    paddingVertical: 72,
   },
   splashCenter: {
     flex: 1,
@@ -155,8 +155,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logo: {
-    width: 140,
-    height: 140,
+    width: 168,
+    height: 168,
   },
   splashBottom: {
     paddingBottom: 24,
@@ -164,7 +164,7 @@ const styles = StyleSheet.create({
   brandText: {
     fontSize: 18,
     fontWeight: '600',
-    color: palette.muted,
+    color: palette.primary,
     letterSpacing: 0.5,
   }
 });

@@ -31,7 +31,7 @@ export function WelcomeScreen({ onGetStarted }: WelcomeScreenProps) {
         {/* Top Header Section */}
         <View style={styles.headerContainer}>
           <Image
-            source={require('../../assets/images/msuLogo.png')}
+            source={require('../../assets/images/TraknLogo2.png')}
             style={styles.headerLogo}
             resizeMode="contain"
           />

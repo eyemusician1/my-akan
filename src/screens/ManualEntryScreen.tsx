@@ -335,29 +335,28 @@ export function ManualEntryScreen({ navigation, route }: any) {
     return cleaned;
   };
 
-  // ============================================================================
-  // TBA MODE: Allow blank logistics (Days, Time) while strictly enforcing completeness if partially filled
-  // ============================================================================
   const isTimeComplete = startTime.length === 5 && endTime.length === 5 && selectedDays.length > 0;
   const isTBA = startTime.length === 0 && endTime.length === 0 && selectedDays.length === 0;
   const isLogisticsValid = isTimeComplete || isTBA;
 
-  const isFormValid =
+  // NEW LOGIC: Form is strictly valid if target is reached.
+  // Otherwise, it checks for standard form completion rules.
+  const isFormValid = isDeclaredUnitLimitReached ? true : (
     (editSubjectId || reviewQueue.length > 0 ? true : declaredTotalUnits.trim().length > 0) &&
     code.trim().length > 0 &&
     title.trim().length > 0 &&
     isLogisticsValid &&
-    !hasUnitError &&
-    !isDeclaredUnitLimitReached;
+    !hasUnitError
+  );
 
   const newTotalAfterSave = totalAddedUnits + units;
   const canAddAnother =
+    !isDeclaredUnitLimitReached &&
     isFormValid &&
     (newTotalAfterSave < maxUnits) &&
     (isNaN(declaredLimitNum) || newTotalAfterSave < declaredLimitNum);
 
   const checkTimeConflict = async () => {
-    // Instantly bypass conflict checks if it is an unscheduled TBA class[cite: 7]
     if (selectedDays.length === 0 || !startTime || !endTime) return false;
 
     const newStart = timeToDecimal(startTime, startAmPm);
@@ -379,7 +378,6 @@ export function ManualEntryScreen({ navigation, route }: any) {
       const hasSharedDays = selectedDays.some(d => subj.days.includes(d));
       if (!hasSharedDays) continue;
 
-      // Skip conflict check against other existing TBA subjects
       if (!subj.startTime || !subj.endTime) continue;
 
       const [sTime, sPeriod] = subj.startTime.split(' ');
@@ -493,6 +491,14 @@ export function ManualEntryScreen({ navigation, route }: any) {
 
   const handleSaveAndFinish = async () => {
     Keyboard.dismiss();
+
+    // NEW LOGIC: Prevent saving empty subjects if the user is just exiting the completed state.
+    if (isDeclaredUnitLimitReached && code.trim().length === 0) {
+      DeviceEventEmitter.emit('SHOW_TOAST', 'Schedule setup complete');
+      setTimeout(() => { navigation.goBack(); }, 50);
+      return;
+    }
+
     const hasConflict = await checkTimeConflict();
     if (hasConflict) return;
 
@@ -556,16 +562,14 @@ export function ManualEntryScreen({ navigation, route }: any) {
           showsVerticalScrollIndicator={false}
         >
 
+          {/* Academic Term Section (Always Visible) */}
           <View style={styles.section} pointerEvents={reviewQueue.length > 0 ? 'none' : 'auto'}>
             <Text style={styles.sectionLabel}>Academic Term</Text>
 
-            {/* RESOLVED HIGHLIGHT BUG: Replaced global row opacity fade with targeted disabled fade */}
             <View style={styles.termRow}>
               {TERMS.map((term) => {
                 const isSelected = semester === term;
                 const isReviewLocked = reviewQueue.length > 0;
-                // If it is locked and not selected, we gray it out.
-                // The active one stays 100% solid color!
                 const isDisabled = (addedCount > 0 && !isSelected) || (isReviewLocked && !isSelected);
 
                 return (
@@ -606,174 +610,187 @@ export function ManualEntryScreen({ navigation, route }: any) {
             )}
           </View>
 
-          <View pointerEvents={isDeclaredUnitLimitReached ? 'none' : 'auto'} style={[isDeclaredUnitLimitReached && styles.disabledSection]}>
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Subject Details</Text>
+          {/* NEW COMPLETION STATE LOGIC */}
+          {isDeclaredUnitLimitReached ? (
+            <View style={styles.completionStateContainer}>
+              <View style={styles.completionIconCircle}>
+                <MaterialIcon name="task-alt" size={40} color={palette.primary} />
+              </View>
+              <Text style={styles.completionTitle}>Target Reached!</Text>
+              <Text style={styles.completionSubtitle}>
+                You've successfully mapped out all {declaredTotalUnits} units for {semester}. Your schedule is fully loaded and ready to go.
+              </Text>
+            </View>
+          ) : (
+            <View>
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Subject Details</Text>
 
-              <View style={styles.codeUnitRow}>
+                <View style={styles.codeUnitRow}>
+                  <TextInput
+                    style={[styles.input, styles.flex2, { marginBottom: 0 }]}
+                    placeholder="Subject Code"
+                    placeholderTextColor={palette.muted}
+                    value={code}
+                    onChangeText={setCode}
+                    onSubmitEditing={() => titleRef.current?.focus()}
+                    autoCapitalize="characters"
+                    returnKeyType="next"
+                  />
+                  <View style={styles.spacer} />
+
+                  <TouchableOpacity style={[styles.unitDropdownToggle, hasUnitError && styles.unitDropdownError]} activeOpacity={0.7} onPress={toggleUnitsDropdown}>
+                    <Text style={[styles.unitDropdownText, hasUnitError && styles.textError]}>{units} Units</Text>
+                    <MaterialIcon name={isUnitsOpen ? "arrow-drop-up" : "arrow-drop-down"} size={24} color={hasUnitError ? '#d32f2f' : palette.ink} />
+                  </TouchableOpacity>
+                </View>
+
+                {hasUnitError && (
+                  <View style={styles.errorBanner}>
+                    <MaterialIcon name="error-outline" size={14} color="#d32f2f" />
+                    <Text style={styles.errorText}>
+                      {isSystemOverload
+                        ? `Exceeds ${maxUnits}-unit maximum for ${semester}.`
+                        : `Exceeds your declared target of ${declaredTotalUnits} units.`}
+                    </Text>
+                  </View>
+                )}
+
+                {isUnitsOpen && (
+                  <View style={styles.unitOptionsRow}>
+                    {UNITS.map(u => (
+                      <TouchableOpacity key={u} style={[styles.unitOptionPill, units === u && styles.unitOptionPillActive]} onPress={() => selectUnit(u)}>
+                        <Text style={[styles.unitOptionText, units === u && styles.unitOptionTextActive]}>{u}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
                 <TextInput
-                  style={[styles.input, styles.flex2, { marginBottom: 0 }]}
-                  placeholder="Subject Code"
+                  ref={sectionRef}
+                  style={[styles.input, { marginTop: spacing.md }]}
+                  placeholder="Section (e.g. Gg) (Optional)"
                   placeholderTextColor={palette.muted}
-                  value={code}
-                  onChangeText={setCode}
+                  value={section}
+                  onChangeText={setSection}
                   onSubmitEditing={() => titleRef.current?.focus()}
+                  maxLength={7}
                   autoCapitalize="characters"
                   returnKeyType="next"
                 />
-                <View style={styles.spacer} />
 
-                <TouchableOpacity style={[styles.unitDropdownToggle, hasUnitError && styles.unitDropdownError]} activeOpacity={0.7} onPress={toggleUnitsDropdown}>
-                  <Text style={[styles.unitDropdownText, hasUnitError && styles.textError]}>{units} Units</Text>
-                  <MaterialIcon name={isUnitsOpen ? "arrow-drop-up" : "arrow-drop-down"} size={24} color={hasUnitError ? '#d32f2f' : palette.ink} />
-                </TouchableOpacity>
+                <TextInput
+                  ref={titleRef}
+                  style={styles.input}
+                  placeholder="Descriptive Title"
+                  placeholderTextColor={palette.muted}
+                  value={title}
+                  onChangeText={setTitle}
+                  onSubmitEditing={() => roomRef.current?.focus()}
+                  returnKeyType="next"
+                />
               </View>
 
-              {hasUnitError && (
-                <View style={styles.errorBanner}>
-                  <MaterialIcon name="error-outline" size={14} color="#d32f2f" />
-                  <Text style={styles.errorText}>
-                    {isSystemOverload
-                      ? `Exceeds ${maxUnits}-unit maximum for ${semester}.`
-                      : `Exceeds your declared target of ${declaredTotalUnits} units.`}
-                  </Text>
-                </View>
-              )}
-
-              {isUnitsOpen && (
-                <View style={styles.unitOptionsRow}>
-                  {UNITS.map(u => (
-                    <TouchableOpacity key={u} style={[styles.unitOptionPill, units === u && styles.unitOptionPillActive]} onPress={() => selectUnit(u)}>
-                      <Text style={[styles.unitOptionText, units === u && styles.unitOptionTextActive]}>{u}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-
-              <TextInput
-                ref={sectionRef}
-                style={[styles.input, { marginTop: spacing.md }]}
-                placeholder="Section (e.g. Gg) (Optional)"
-                placeholderTextColor={palette.muted}
-                value={section}
-                onChangeText={setSection}
-                onSubmitEditing={() => titleRef.current?.focus()}
-                maxLength={7}
-                autoCapitalize="characters"
-                returnKeyType="next"
-              />
-
-              <TextInput
-                ref={titleRef}
-                style={styles.input}
-                placeholder="Descriptive Title"
-                placeholderTextColor={palette.muted}
-                value={title}
-                onChangeText={setTitle}
-                onSubmitEditing={() => roomRef.current?.focus()}
-                returnKeyType="next"
-              />
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Logistics (Optional for TBA)</Text>
-              <TextInput
-                ref={roomRef}
-                style={styles.input}
-                placeholder="Room / Location"
-                placeholderTextColor={palette.muted}
-                value={room}
-                onChangeText={setRoom}
-                onSubmitEditing={() => instructorRef.current?.focus()}
-                returnKeyType="next"
-              />
-              <TextInput
-                ref={instructorRef}
-                style={styles.input}
-                placeholder="Instructor Name"
-                placeholderTextColor={palette.muted}
-                value={instructor}
-                onChangeText={setInstructor}
-                onSubmitEditing={() => Keyboard.dismiss()}
-                returnKeyType="done"
-              />
-            </View>
-
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Class Days (Optional for TBA)</Text>
-              <View style={styles.daysRow}>
-                {DAYS_OF_WEEK.map((day) => {
-                  const isSelected = selectedDays.includes(day.value);
-                  return (
-                    <TouchableOpacity key={day.value} activeOpacity={0.7} onPress={() => toggleDay(day.value)} style={[styles.dayPill, isSelected && styles.dayPillActive]}>
-                      <Text style={[styles.dayPillText, isSelected && styles.dayPillTextActive]}>{day.label}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Logistics (Optional for TBA)</Text>
+                <TextInput
+                  ref={roomRef}
+                  style={styles.input}
+                  placeholder="Room / Location"
+                  placeholderTextColor={palette.muted}
+                  value={room}
+                  onChangeText={setRoom}
+                  onSubmitEditing={() => instructorRef.current?.focus()}
+                  returnKeyType="next"
+                />
+                <TextInput
+                  ref={instructorRef}
+                  style={styles.input}
+                  placeholder="Instructor Name"
+                  placeholderTextColor={palette.muted}
+                  value={instructor}
+                  onChangeText={setInstructor}
+                  onSubmitEditing={() => Keyboard.dismiss()}
+                  returnKeyType="done"
+                />
               </View>
-            </View>
 
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Time (Optional for TBA)</Text>
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Class Days (Optional for TBA)</Text>
+                <View style={styles.daysRow}>
+                  {DAYS_OF_WEEK.map((day) => {
+                    const isSelected = selectedDays.includes(day.value);
+                    return (
+                      <TouchableOpacity key={day.value} activeOpacity={0.7} onPress={() => toggleDay(day.value)} style={[styles.dayPill, isSelected && styles.dayPillActive]}>
+                        <Text style={[styles.dayPillText, isSelected && styles.dayPillTextActive]}>{day.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
 
-              <View style={styles.timeRow}>
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Time (Optional for TBA)</Text>
 
-                <View style={styles.timeContainer}>
-                  <Text style={styles.timeLabel}>Starts</Text>
-                  <View style={styles.timeInputWrapper}>
-                    <TextInput
-                      style={styles.timeValueInput}
-                      value={startTime}
-                      onChangeText={(text) => {
-                        const formatted = formatTimeInput(text);
-                        setStartTime(formatted);
-                        if (formatted.length === 5) endTimeRef.current?.focus();
-                      }}
-                      onSubmitEditing={() => endTimeRef.current?.focus()}
-                      placeholder="8:00"
-                      placeholderTextColor={palette.muted}
-                      keyboardType="number-pad"
-                      maxLength={5}
-                      returnKeyType="next"
-                    />
-                    <TouchableOpacity style={styles.amPmToggle} onPress={() => setStartAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
-                      <Text style={styles.amPmText}>{startAmPm}</Text>
-                    </TouchableOpacity>
+                <View style={styles.timeRow}>
+
+                  <View style={styles.timeContainer}>
+                    <Text style={styles.timeLabel}>Starts</Text>
+                    <View style={styles.timeInputWrapper}>
+                      <TextInput
+                        style={styles.timeValueInput}
+                        value={startTime}
+                        onChangeText={(text) => {
+                          const formatted = formatTimeInput(text);
+                          setStartTime(formatted);
+                          if (formatted.length === 5) endTimeRef.current?.focus();
+                        }}
+                        onSubmitEditing={() => endTimeRef.current?.focus()}
+                        placeholder="8:00"
+                        placeholderTextColor={palette.muted}
+                        keyboardType="number-pad"
+                        maxLength={5}
+                        returnKeyType="next"
+                      />
+                      <TouchableOpacity style={styles.amPmToggle} onPress={() => setStartAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
+                        <Text style={styles.amPmText}>{startAmPm}</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                </View>
 
-                <View style={styles.timeDivider}>
-                  <MaterialIcon name="arrow-forward" size={20} color={palette.muted} />
-                </View>
-
-                <View style={styles.timeContainer}>
-                  <Text style={styles.timeLabel}>Ends</Text>
-                  <View style={styles.timeInputWrapper}>
-                    <TextInput
-                      ref={endTimeRef}
-                      style={styles.timeValueInput}
-                      value={endTime}
-                      onChangeText={(text) => {
-                        const formatted = formatTimeInput(text);
-                        setEndTime(formatted);
-                        if (formatted.length === 5) Keyboard.dismiss();
-                      }}
-                      onSubmitEditing={() => Keyboard.dismiss()}
-                      placeholder="5:00"
-                      placeholderTextColor={palette.muted}
-                      keyboardType="number-pad"
-                      maxLength={5}
-                      returnKeyType="done"
-                    />
-                    <TouchableOpacity style={styles.amPmToggle} onPress={() => setEndAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
-                      <Text style={styles.amPmText}>{endAmPm}</Text>
-                    </TouchableOpacity>
+                  <View style={styles.timeDivider}>
+                    <MaterialIcon name="arrow-forward" size={20} color={palette.muted} />
                   </View>
-                </View>
 
+                  <View style={styles.timeContainer}>
+                    <Text style={styles.timeLabel}>Ends</Text>
+                    <View style={styles.timeInputWrapper}>
+                      <TextInput
+                        ref={endTimeRef}
+                        style={styles.timeValueInput}
+                        value={endTime}
+                        onChangeText={(text) => {
+                          const formatted = formatTimeInput(text);
+                          setEndTime(formatted);
+                          if (formatted.length === 5) Keyboard.dismiss();
+                        }}
+                        onSubmitEditing={() => Keyboard.dismiss()}
+                        placeholder="5:00"
+                        placeholderTextColor={palette.muted}
+                        keyboardType="number-pad"
+                        maxLength={5}
+                        returnKeyType="done"
+                      />
+                      <TouchableOpacity style={styles.amPmToggle} onPress={() => setEndAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
+                        <Text style={styles.amPmText}>{endAmPm}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                </View>
               </View>
             </View>
-          </View>
+          )}
 
         </ScrollView>
 
@@ -797,7 +814,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
         {!isKeyboardVisible && (
           <View style={[styles.bottomWrapper, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
 
-            {!editSubjectId && reviewQueue.length === 0 && (
+            {!editSubjectId && reviewQueue.length === 0 && !isDeclaredUnitLimitReached && (
               <TouchableOpacity
                 style={[styles.addAnotherButton, !canAddAnother && styles.addAnotherDisabled]}
                 activeOpacity={0.7}
@@ -828,13 +845,15 @@ export function ManualEntryScreen({ navigation, route }: any) {
                 style={styles.fabIcon}
               />
               <Text style={[styles.fabSaveText, !isFormValid && styles.textMuted]}>
-                {editSubjectId
-                  ? 'Update Subject'
-                  : reviewQueue.length > 1
-                    ? 'Save & Next Subject'
-                    : reviewQueue.length === 1
-                      ? 'Save & Finish Queue'
-                      : 'Save & Finish'}
+                {isDeclaredUnitLimitReached
+                  ? 'Finish & Return Home'
+                  : editSubjectId
+                    ? 'Update Subject'
+                    : reviewQueue.length > 1
+                      ? 'Save & Next Subject'
+                      : reviewQueue.length === 1
+                        ? 'Save & Finish Queue'
+                        : 'Save & Finish'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -882,7 +901,6 @@ const styles = StyleSheet.create({
   termPillText: { fontSize: 14, fontWeight: '600', color: palette.ink },
   termPillTextActive: { color: palette.surface },
 
-  // Replaced global wrapper opacity fade with a direct UI disabled fade
   termPillDisabled: { opacity: 0.35, backgroundColor: 'transparent', borderWidth: 1, borderColor: 'rgba(28,28,30,0.1)' },
   termTextDisabled: { color: palette.muted },
 
@@ -891,7 +909,12 @@ const styles = StyleSheet.create({
   inputContextSub: { fontSize: 12, color: palette.muted, fontWeight: '500', marginTop: 2 },
   inputContext: { fontSize: 16, fontWeight: '700', color: palette.ink, backgroundColor: 'rgba(255, 255, 255, 0.6)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, textAlign: 'center', minWidth: 60 },
 
-  disabledSection: { opacity: 0.4 },
+  // NEW COMPLETION STATE STYLES
+  completionStateContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: spacing.xxl, paddingHorizontal: spacing.lg, backgroundColor: 'rgba(197, 160, 89, 0.05)', borderRadius: 24, borderWidth: 1, borderColor: 'rgba(197, 160, 89, 0.2)', marginTop: spacing.md },
+  completionIconCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(197, 160, 89, 0.15)', alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg },
+  completionTitle: { fontSize: 22, fontWeight: '800', color: palette.ink, marginBottom: spacing.sm, letterSpacing: -0.5 },
+  completionSubtitle: { fontSize: 15, color: palette.body, textAlign: 'center', lineHeight: 22 },
+
   codeUnitRow: { flexDirection: 'row', alignItems: 'center' },
   flex2: { flex: 2 },
   spacer: { width: spacing.md },
