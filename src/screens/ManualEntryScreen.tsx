@@ -456,7 +456,9 @@ export function ManualEntryScreen({ navigation, route }: any) {
         });
       });
     } catch (dbError) {
-      console.log('WatermelonDB commit note:', dbError);
+      if (__DEV__) {
+        console.log('WatermelonDB commit note:', dbError);
+      }
     }
   };
 
@@ -508,7 +510,9 @@ export function ManualEntryScreen({ navigation, route }: any) {
       const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
       if (schedules[0]) {
         const securelySavedSubjects = await schedules[0].subjects.fetch();
-        console.log(`[NOTIFEE] Queuing alarms for ${securelySavedSubjects.length} subjects...`);
+        if (__DEV__) {
+          console.log(`[NOTIFEE] Queuing alarms for ${securelySavedSubjects.length} subjects...`);
+        }
         await NotificationService.syncScheduleAlarms(securelySavedSubjects);
       }
 

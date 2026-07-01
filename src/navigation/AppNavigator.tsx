@@ -27,7 +27,7 @@ export function AppNavigator() {
   useEffect(() => {
     const prepareApp = async () => {
       try {
-        // Run the storage checks AND a minimum 1.5-second timer simultaneously.
+        // Run the storage checks and a short splash delay simultaneously.
         const [storedName, storedYear] = await Promise.all([
           AsyncStorage.getItem('@user_name'),
           AsyncStorage.getItem('@user_year'), // <-- CHECK FOR YEAR TOO

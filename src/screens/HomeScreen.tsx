@@ -140,6 +140,7 @@ export function HomeScreen({ navigation }: any) {
   const [activeFilter, setActiveFilter] = useState('Recent');
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [userName, setUserName] = useState('');
+  const didRunCleanupRef = useRef(false);
 
   // --- MAP MODAL STATES ---
   const [isMapModalVisible, setIsMapModalVisible] = useState(false);
@@ -253,7 +254,11 @@ export function HomeScreen({ navigation }: any) {
       };
 
       fetchUserName();
-      cleanupEmptySchedules();
+
+      if (!didRunCleanupRef.current) {
+        didRunCleanupRef.current = true;
+        cleanupEmptySchedules();
+      }
     }, [])
   );
 

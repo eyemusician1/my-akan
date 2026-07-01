@@ -42,6 +42,7 @@ export class NotificationService {
   }
 
   static async syncScheduleAlarms(subjects: Subject[]) {
+    await NotificationService.requestPermissions();
     await notifee.cancelAllNotifications();
 
     await notifee.createChannel({
@@ -74,8 +75,9 @@ export class NotificationService {
           repeatFrequency: RepeatFrequency.WEEKLY, // Repeats this class alarm every week forever
         };
 
-        // Real truth tracker for your console
-        console.log(`[PRODUCTION ALARM] -> "${subj.code}" (${dayStr}) armed for:`, new Date(trigger.timestamp).toLocaleString());
+        if (__DEV__) {
+          console.log(`[PRODUCTION ALARM] -> "${subj.code}" (${dayStr}) armed for:`, new Date(trigger.timestamp).toLocaleString());
+        }
 
         await notifee.createTriggerNotification(
           {
