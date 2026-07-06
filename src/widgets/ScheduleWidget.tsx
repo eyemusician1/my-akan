@@ -1,118 +1,107 @@
 import React from 'react';
-import { FlexWidget, TextWidget, ListWidget } from 'react-native-android-widget';
+import { FlexWidget, TextWidget, ColorProp } from 'react-native-android-widget';
 
-interface WidgetSubject {
+export interface WidgetSubject {
   code: string;
   room: string;
   time: string;
-  color: string;
+  // Strictly typed as ColorProp so TypeScript accepts hex colors
+  color?: ColorProp;
 }
 
-interface ScheduleWidgetProps {
-  dateHeader: string;
-  subjects: WidgetSubject[];
+export interface ScheduleWidgetProps {
+  dateHeader?: string;
+  subjects?: WidgetSubject[];
 }
 
-export function ScheduleWidget({ dateHeader = 'Today', subjects = [] }: ScheduleWidgetProps) {
+export function ScheduleWidget({
+  dateHeader = 'Today',
+  subjects = [],
+}: ScheduleWidgetProps) {
   return (
     <FlexWidget
       style={{
         height: 'match_parent',
         width: 'match_parent',
-        backgroundColor: '#1E1F22',
-        borderRadius: 28,
-        padding: 20,
+        backgroundColor: '#1E1F22', // M3 Surface Dark
+        borderRadius: 24,
+        paddingHorizontal: 18,
+        paddingVertical: 16,
         flexDirection: 'column',
-        justifyContent: 'flex_start',
       }}
     >
-      {/* Top Header Row (Date + FAB) - Google Inspired */}
+      {/* Top Header Row: Date + Quick Add FAB */}
       <FlexWidget
         style={{
           flexDirection: 'row',
-          justifyContent: 'space_between',
+          // FIX: Changed from 'space_between' to 'space-between'
+          justifyContent: 'space-between',
           alignItems: 'center',
           width: 'match_parent',
-          marginBottom: 20,
+          marginBottom: 14,
         }}
       >
-        {/* Date Display */}
         <TextWidget
           text={dateHeader}
           style={{
-            fontSize: 32,
-            fontWeight: '700',
-            color: '#FFFBFE',
-            letterSpacing: -0.5,
+            fontSize: 20,
+            fontWeight: 'bold',
+            color: '#E2E2E6',
+            letterSpacing: -0.3,
           }}
         />
 
-        {/* Floating Action Button - Light Blue (+) */}
+        {/* Circular M3 Accent FAB */}
         <FlexWidget
           clickAction="OPEN_APP_TO_ADD"
           style={{
-            width: 56,
-            height: 56,
-            borderRadius: 28,
-            backgroundColor: '#A8C7FA',
+            width: 38,
+            height: 38,
+            borderRadius: 19,
+            backgroundColor: '#A8C7FA', // M3 Primary Blue Accent
             justifyContent: 'center',
             alignItems: 'center',
-            elevation: 4,
           }}
         >
           <TextWidget
             text="+"
             style={{
-              fontSize: 28,
-              fontWeight: '400',
-              color: '#1F2937',
+              fontSize: 24,
+              fontWeight: 'bold',
+              color: '#062E6F',
             }}
           />
         </FlexWidget>
       </FlexWidget>
 
-      {/* Main Content Area */}
+      {/* Content Area */}
       {subjects.length === 0 ? (
-        /* Empty State - Google Inspired */
         <FlexWidget
           style={{
             flex: 1,
             width: 'match_parent',
-            backgroundColor: '#2C2F36',
-            borderRadius: 20,
+            backgroundColor: '#2A2C30', // Surface Container Tonal
+            borderRadius: 18,
             justifyContent: 'center',
             alignItems: 'center',
-            paddingHorizontal: 24,
-            paddingVertical: 40,
+            padding: 16,
           }}
         >
           <TextWidget
-            text="Nothing"
+            text="Nothing planned"
             style={{
-              fontSize: 28,
+              fontSize: 16,
               fontWeight: '500',
-              color: '#FFFBFE',
-              textAlign: 'center',
-              lineHeight: 36,
-            }}
-          />
-          <TextWidget
-            text="planned"
-            style={{
-              fontSize: 28,
-              fontWeight: '500',
-              color: '#FFFBFE',
+              color: '#A0A2A8',
               textAlign: 'center',
             }}
           />
         </FlexWidget>
       ) : (
-        /* Events List */
         <FlexWidget
           style={{
             flexDirection: 'column',
             width: 'match_parent',
-            flex: 1,
           }}
         >
           {subjects.slice(0, 3).map((subj, index) => (
@@ -121,29 +110,30 @@ export function ScheduleWidget({ dateHeader = 'Today', subjects = [] }: Schedule
               clickAction="OPEN_APP"
               style={{
                 width: 'match_parent',
-                backgroundColor: '#2C2F36',
-                borderRadius: 16,
-                paddingVertical: 14,
-                paddingHorizontal: 16,
-                marginBottom: index < subjects.slice(0, 3).length - 1 ? 10 : 0,
-                borderLeftWidth: 5,
-                borderLeftColor: subj.color || '#A8C7FA',
+                backgroundColor: '#2A2C30',
+                borderRadius: 14,
+                paddingVertical: 10,
+                paddingHorizontal: 14,
+                marginBottom: index < Math.min(subjects.length, 3) - 1 ? 8 : 0,
+                borderLeftWidth: 4,
+                // FIX: Explicitly cast fallback to ColorProp to satisfy TypeScript compiler
+                borderLeftColor: (subj.color || '#A8C7FA') as ColorProp,
               }}
             >
               <TextWidget
                 text={subj.code}
                 style={{
-                  fontSize: 16,
-                  fontWeight: '600',
+                  fontSize: 15,
+                  fontWeight: 'bold',
                   color: '#FFFBFE',
-                  marginBottom: 4,
                 }}
               />
               <TextWidget
-                text={`${subj.time}${subj.room ? ' • ' + subj.room : ''}`}
+                text={`${subj.time} • ${subj.room || 'TBA'}`}
                 style={{
                   fontSize: 13,
-                  color: '#9CA3AF',
+                  color: '#A0A2A8',
+                  marginTop: 2,
                 }}
               />
             </FlexWidget>
