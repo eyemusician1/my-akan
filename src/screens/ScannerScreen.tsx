@@ -1,11 +1,5 @@
 /**
- * ScannerScreen.tsx — Production COR OCR Scanner
- *
- * ── Update: Forgiving OCR Engine ─────────────────────────────────────────────
- * [A] Distance-Based Deduplication: Prevents dropping STT071 at the bottom
- * if STT071.1 at the top lost its decimal point during the scan.
- * [B] Glued Text Bypass: Allows codes attached to symbols (ITE192*MACATO)
- * [C] Glyph Auto-Correction: Fixes "1TE192" -> "ITE192" and "ITD1O4" -> "ITD104"
+ * ScannerScreen.tsx — Production COR OCR Scanner with Strict Document Verification
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -23,8 +17,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ImagePicker, { ImageOrVideo } from 'react-native-image-crop-picker';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import ImageResizer from 'react-native-image-resizer';
+import { Q } from '@nozbe/watermelondb';
 
 import { palette, spacing } from '../tokens';
+import { database } from '../core/database';
+import Schedule from '../core/database/models/Schedule';
+import Subject from '../core/database/models/Subject';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -193,6 +191,58 @@ async function recognizeWithBestOrientation(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DOCUMENT VERIFICATION SAFEGUARD
+// ─────────────────────────────────────────────────────────────────────────────
+
+const isGenuineCorDocument = (rawText: string, subjects: ParsedSubject[]): boolean => {
+  if (subjects.length === 0) return false;
+
+  const lower = rawText.toLowerCase();
+
+  // Tier 1: Check for Institutional Keywords
+  const institutionalKeywords = [
+    'mindanao state university',
+    'msu',
+    'certificate of registration',
+    'office of the registrar',
+    'student registration',
+    'matriculation',
+    'cor',
+  ];
+  const hasInstitutional = institutionalKeywords.some(kw => lower.includes(kw));
+
+  // Tier 2: Check for Table Headers & Academic Keywords
+  const structuralKeywords = [
+    'subject',
+    'code',
+    'title',
+    'units',
+    'schedule',
+    'instructor',
+    'room',
+    'section',
+    'semester',
+    'lec',
+    'lab',
+  ];
+  const structuralScore = structuralKeywords.filter(kw => lower.includes(kw)).length;
+
+  // Tier 3: Temporal & Day Density Check
+  const timeMatches = (rawText.match(/\d{1,2}:\d{2}/g) || []).length;
+  const dayMatches = (rawText.match(/\b(MON|TUE|WED|THU|FRI|SAT|SUN|MWF|TTH|MTH|MTWTHF)\b/gi) || []).length;
+
+  // Case A: Full document scan with institutional header and valid subjects
+  if (hasInstitutional && subjects.length >= 1) return true;
+
+  // Case B: Tightly cropped schedule table (must have academic column headers OR strong time/day patterns)
+  if (structuralScore >= 2 && subjects.length >= 1) return true;
+  if ((timeMatches >= 1 || dayMatches >= 1) && subjects.length >= 1) return true;
+
+  // False positive (e.g., random receipt or non-academic image)
+  return false;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN PARSER
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -202,9 +252,7 @@ function parseCorText(rawText: string): ParseResult {
     .replace(/\bpn\b/gi,   'pm')
     .replace(/\barn\b/gi,  'am')
     .replace(/STTO/gi,     'STT0')
-    // Fix leading 1, l, or | misread as I (e.g., 1TE193 -> ITE193)
     .replace(/\b[1l|]([A-Z]{2,3}\d{3})(?!\d)/gi, (_, p1) => 'I' + p1.toUpperCase())
-    // Fix letter O misread as zero in numbers (e.g. ITD1O4 -> ITD104)
     .replace(/\b([A-Z]{2,4}[1-9])O(\d)(?!\d)/gi, (_, p1, p2) => p1.toUpperCase() + '0' + p2)
     .replace(/(\d{1,2}:\d{2})\s*[Aa][l1|][Mm]/g, '$1am')
     .replace(/(\d{1,2}:\d{2})\s*[Pp][l1|][Mm]/g, '$1pm')
@@ -242,7 +290,6 @@ function parseCorText(rawText: string): ParseResult {
   const yearSuffix  = yearMatch ? `, ${yearMatch[1].replace('–', '-')}` : '';
   const academicTerm = detectedSemester ? `${detectedSemester}${yearSuffix}` : null;
 
-  // NEW: Relaxed boundary allows codes glued to symbols (e.g. ITE192*MACATO)
   const CODE_SRC = /\b([A-Z]{2,4})\s?(\d{3}(?:\.\d)?)(?!\d)/.source;
   const codeItems: { code: string; lineIndex: number }[] = [];
 
@@ -254,11 +301,7 @@ function parseCorText(rawText: string): ParseResult {
       const normalized = `${prefix}${m[2]}`;
 
       if (!NON_CODE_PREFIXES.has(prefix)) {
-        // NEW: Distance-based deduplication
-        // Only drops if the exact code was seen within 2 lines of this one.
-        // This ensures that STT071.1 (top) and STT071 (bottom) BOTH survive!
         const isDuplicate = codeItems.some(c => c.code === normalized && Math.abs(c.lineIndex - i) <= 2);
-
         if (!isDuplicate) {
           codeItems.push({ code: normalized, lineIndex: i });
         }
@@ -300,7 +343,7 @@ function parseCorText(rawText: string): ParseResult {
   const CODE_TEST_RE = new RegExp(CODE_SRC, 'i');
   const DAY_ONLY_RE  = new RegExp(`^(${DAY_SRC.slice(3, -4)})$`, 'i');
 
-  function isValidRoom(t: string): boolean {
+  const isValidRoom = (t: string): boolean => {
     return (
       t.length >= 2 && t.length <= 10 &&
       !t.includes(' ') &&
@@ -317,14 +360,14 @@ function parseCorText(rawText: string): ParseResult {
         /^[A-Z]{2,4}$/.test(t)
       )
     );
-  }
+  };
 
-  function extractInstructor(ctx: string): string {
+  const extractInstructor = (ctx: string): string => {
     const m = ctx.match(
       /(?:Prof\.?|Dr\.?|Mr\.?|Ms\.?|Mrs\.?|Engr\.?|Atty\.?|Inst\.?)\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*/
     );
     return m ? m[0].trim() : '';
-  }
+  };
 
   const subjects: ParsedSubject[] = codeItems.map((item, idx) => {
     const nextCodeLine = codeItems[idx + 1]?.lineIndex ?? lines.length;
@@ -438,7 +481,52 @@ export function ScannerScreen({ navigation, route }: any) {
   const [isRotating,   setIsRotating]   = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  useEffect(() => { launchPicker(); }, []);
+  // Restriction Blocker State
+  const [restriction, setRestriction] = useState<{
+    isBlocked: boolean;
+    title: string;
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    checkRestrictionsAndLaunch();
+  }, []);
+
+  const checkRestrictionsAndLaunch = async () => {
+    try {
+      const schedules = await database
+        .get<Schedule>('schedules')
+        .query(Q.sortBy('created_at', Q.desc))
+        .fetch();
+
+      if (schedules.length > 0) {
+        const latest = schedules[0];
+        const subjects = await latest.subjects.fetch();
+
+        const totalUnits = subjects.reduce((sum: number, s: Subject) => sum + (s.units || 0), 0);
+
+        const maxAllowed = latest.academicTerm.toLowerCase().includes('sum') ? 6 : 24;
+        const targetUnits = latest.totalSubjects || maxAllowed;
+
+        if (subjects.length > 0 || totalUnits >= targetUnits) {
+          const isSatisfied = totalUnits >= targetUnits;
+          setRestriction({
+            isBlocked: true,
+            title: isSatisfied ? 'Units Satisfied' : 'Existing Schedule Found',
+            message: isSatisfied
+              ? `You have already satisfied your target of ${targetUnits} units for ${latest.academicTerm}. Additional scanning is disabled.`
+              : `You already have an active schedule with ${subjects.length} enrolled subject(s) for ${latest.academicTerm}.\n\nTo scan or upload a new COR file, please remove or archive your existing schedule first.`,
+          });
+          return;
+        }
+      }
+
+      await launchPicker();
+    } catch (error) {
+      console.error('Restriction Check Error:', error);
+      await launchPicker();
+    }
+  };
 
   const launchPicker = async () => {
     try {
@@ -470,7 +558,7 @@ export function ScannerScreen({ navigation, route }: any) {
       if (e?.message !== 'User cancelled image selection') {
         Alert.alert('Error', 'Could not open the camera or gallery.');
       }
-      if (!displayUri) navigation.goBack();
+      if (!displayUri && !restriction?.isBlocked) navigation.goBack();
     }
   };
 
@@ -514,14 +602,12 @@ export function ScannerScreen({ navigation, route }: any) {
       const parsedData = parseCorText(text);
       setIsProcessing(false);
 
-      if (parsedData.subjects.length === 0) {
+      // STRICT VERIFICATION CHECK: Disregard random documents
+      if (!isGenuineCorDocument(text, parsedData.subjects)) {
         Alert.alert(
-          'No Subjects Found',
-          "We couldn't detect any subject codes.\n\n" +
-          'Tips:\n' +
-          '• Make sure the document is right-side up (use the rotate button)\n' +
-          '• Crop tightly around the subject table\n' +
-          '• Ensure good, even lighting with no glare',
+          'Invalid Document Detected',
+          'The scanned image does not appear to be an official Certificate of Registration (COR).\n\n' +
+          'Please scan a valid MSU Certificate of Registration or ensure table headers (Subject Code, Title, Schedule) are clearly visible inside the cropped frame.'
         );
         return;
       }
@@ -538,6 +624,37 @@ export function ScannerScreen({ navigation, route }: any) {
       );
     }
   };
+
+  // ── Blocker state (M3 Design) ─────────────────────────────────────────────
+  if (restriction?.isBlocked) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+            <MaterialIcon name="close" size={28} color={palette.surface} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Scan Restricted</Text>
+          <View style={styles.headerRight} />
+        </View>
+
+        <View style={styles.blockerContent}>
+          <View style={styles.blockerIconCircle}>
+            <MaterialIcon name="lock-outline" size={48} color={palette.primary} />
+          </View>
+          <Text style={styles.blockerTitle}>{restriction.title}</Text>
+          <Text style={styles.blockerMessage}>{restriction.message}</Text>
+
+          <TouchableOpacity
+            style={styles.blockerButton}
+            activeOpacity={0.8}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.blockerButtonText}>Return to Home</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   // ── Loading state ─────────────────────────────────────────────────────────
   if (!displayUri) {
@@ -699,4 +816,48 @@ const styles = StyleSheet.create({
   },
   primaryButtonDisabled: { opacity: 0.6 },
   primaryButtonText: { fontSize: 16, fontWeight: '700', color: palette.surface, marginLeft: 8 },
+
+  // ── Blocker UI Styles ─────────────────────────────────────────────────────
+  blockerContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xxl,
+  },
+  blockerIconCircle: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: 'rgba(197, 160, 89, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.xl,
+  },
+  blockerTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: palette.surface,
+    textAlign: 'center',
+    marginBottom: spacing.sm,
+  },
+  blockerMessage: {
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.7)',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: spacing.xxl,
+  },
+  blockerButton: {
+    backgroundColor: palette.surface,
+    paddingHorizontal: 36,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  blockerButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: palette.ink,
+  },
 });

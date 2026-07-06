@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -11,7 +11,8 @@ import {
   Platform,
   TouchableWithoutFeedback,
   Keyboard,
-  Alert
+  Alert,
+  Animated
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -79,10 +80,12 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
   // --- STATE ---
   const [weeklyAllowance, setWeeklyAllowance] = useState(1500);
 
-  // Modal States
-  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
-  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
-  const [isDueModalOpen, setIsDueModalOpen] = useState(false);
+  // Modal Visibility States
+  const [activeModal, setActiveModal] = useState<'expense' | 'settings' | 'due' | null>(null);
+
+  // Animation Refs
+  const modalOpacity = useRef(new Animated.Value(0)).current;
+  const modalTranslateY = useRef(new Animated.Value(600)).current;
 
   // Input States
   const [expenseAmount, setExpenseAmount] = useState('');
@@ -105,6 +108,29 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
     loadSettings();
   }, []);
 
+  // --- CUSTOM SPRING MODAL ANIMATIONS ---
+  const openAnimatedModal = (type: 'expense' | 'settings' | 'due') => {
+    setActiveModal(type);
+    modalOpacity.setValue(0);
+    modalTranslateY.setValue(600);
+
+    Animated.parallel([
+      Animated.timing(modalOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
+      Animated.spring(modalTranslateY, { toValue: 0, tension: 65, friction: 9, useNativeDriver: true })
+    ]).start();
+  };
+
+  const closeAnimatedModal = (callback?: () => void) => {
+    Keyboard.dismiss();
+    Animated.parallel([
+      Animated.timing(modalOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.timing(modalTranslateY, { toValue: 600, duration: 200, useNativeDriver: true })
+    ]).start(() => {
+      setActiveModal(null);
+      if (callback) callback();
+    });
+  };
+
   // --- DYNAMIC SMART BUDGET MATH ---
   const totalSpent = expenses.reduce((sum, e) => sum + e.amount, 0);
   const remainingBudget = weeklyAllowance - totalSpent;
@@ -120,7 +146,6 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
     { name: 'Others', icon: 'category' },
   ];
 
-  // --- SMART DIAGNOSIS GENERATOR (NO EMOJIS, SUBTLE UI) ---
   const getSmartInsight = () => {
     if (remainingBudget < 0) {
       return { text: "You have exceeded your weekly budget limit.", icon: "error-outline", color: "#d32f2f", bg: "rgba(211, 47, 47, 0.08)" };
@@ -141,7 +166,7 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
     setSelectedCategory(category);
     setExpenseTitle('');
     setExpenseAmount('');
-    setIsExpenseModalOpen(true);
+    openAnimatedModal('expense');
   };
 
   const saveExpense = async () => {
@@ -151,16 +176,16 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
       return;
     }
 
-    await database.write(async () => {
-      await database.get<Expense>('expenses').create(expense => {
-        expense.title = expenseTitle.trim() || selectedCategory.name;
-        expense.amount = parsedAmount;
-        expense.category = selectedCategory.name.toLowerCase();
-        expense.icon = selectedCategory.icon;
+    closeAnimatedModal(async () => {
+      await database.write(async () => {
+        await database.get<Expense>('expenses').create(expense => {
+          expense.title = expenseTitle.trim() || selectedCategory.name;
+          expense.amount = parsedAmount;
+          expense.category = selectedCategory.name.toLowerCase();
+          expense.icon = selectedCategory.icon;
+        });
       });
     });
-
-    setIsExpenseModalOpen(false);
   };
 
   const saveSettings = async () => {
@@ -170,9 +195,10 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
       return;
     }
 
-    setWeeklyAllowance(newBudget);
-    await AsyncStorage.setItem('@budget', newBudget.toString());
-    setIsSettingsModalOpen(false);
+    closeAnimatedModal(async () => {
+      setWeeklyAllowance(newBudget);
+      await AsyncStorage.setItem('@budget', newBudget.toString());
+    });
   };
 
   const saveDue = async () => {
@@ -182,17 +208,17 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
       return;
     }
 
-    await database.write(async () => {
-      await database.get<Due>('dues').create(due => {
-        due.title = dueTitle.trim();
-        due.amount = parsedAmount;
-        due.isPaid = false;
+    closeAnimatedModal(async () => {
+      await database.write(async () => {
+        await database.get<Due>('dues').create(due => {
+          due.title = dueTitle.trim();
+          due.amount = parsedAmount;
+          due.isPaid = false;
+        });
       });
+      setDueTitle('');
+      setDueAmount('');
     });
-
-    setIsDueModalOpen(false);
-    setDueTitle('');
-    setDueAmount('');
   };
 
   const toggleDue = async (due: Due) => {
@@ -229,7 +255,7 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
           style={styles.settingsBtn}
           onPress={() => {
             setBudgetInput(weeklyAllowance.toString());
-            setIsSettingsModalOpen(true);
+            openAnimatedModal('settings');
           }}
         >
           <MaterialIcon name="tune" size={24} color={palette.ink} />
@@ -257,7 +283,6 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
           </View>
         </View>
 
-        {/* --- SMART M3 INSIGHT BANNER (Subtle Icons) --- */}
         <View style={[styles.insightBanner, { backgroundColor: insight.bg }]}>
           <MaterialIcon name={insight.icon} size={18} color={insight.color} style={styles.insightIcon} />
           <Text style={[styles.insightText, { color: insight.color }]}>{insight.text}</Text>
@@ -308,7 +333,7 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
 
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionLabelInline}>Academic Dues</Text>
-          <TouchableOpacity onPress={() => setIsDueModalOpen(true)} style={styles.addDueBtn}>
+          <TouchableOpacity onPress={() => openAnimatedModal('due')} style={styles.addDueBtn}>
             <MaterialIcon name="add" size={16} color={palette.primary} />
             <Text style={styles.addDueText}>Add Fee</Text>
           </TouchableOpacity>
@@ -332,134 +357,141 @@ const PaymentsScreenUI = ({ navigation, expenses, dues }: PaymentsScreenProps) =
 
       </ScrollView>
 
-      {/* --- ADD EXPENSE MODAL --- */}
-      <Modal visible={isExpenseModalOpen} transparent animationType="slide">
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Add {selectedCategory?.name} Expense</Text>
-                <TouchableOpacity onPress={() => setIsExpenseModalOpen(false)}>
-                  <MaterialIcon name="close" size={28} color={palette.ink} />
-                </TouchableOpacity>
+      {/* --- MASTER ANIMATED MODAL (Bypasses Android Shadow Smear) --- */}
+      <Modal visible={activeModal !== null} transparent animationType="none" hardwareAccelerated>
+        <View style={styles.modalOverlay}>
+          {/* Backdrop */}
+          <Animated.View style={[StyleSheet.absoluteFillObject, { backgroundColor: 'rgba(0,0,0,0.5)', opacity: modalOpacity }]}>
+            <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => closeAnimatedModal()} />
+          </Animated.View>
+
+          {/* Bottom Sheet Content */}
+          <Animated.View style={[styles.modalContentWrapper, { transform: [{ translateY: modalTranslateY }] }]}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+              <View style={styles.modalContent}>
+
+                {/* 1. EXPENSE CONTENT */}
+                {activeModal === 'expense' && (
+                  <>
+                    <View style={styles.modalHeader}>
+                      <Text style={styles.modalTitle}>Add {selectedCategory?.name} Expense</Text>
+                      <TouchableOpacity onPress={() => closeAnimatedModal()}>
+                        <MaterialIcon name="close" size={28} color={palette.ink} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Amount</Text>
+                      <View style={styles.amountInputWrapper}>
+                        <Text style={styles.pesoSign}>₱</Text>
+                        <TextInput
+                          style={styles.amountInput}
+                          value={expenseAmount}
+                          onChangeText={(text) => setExpenseAmount(text.replace(/[^0-9.]/g, ''))}
+                          placeholder="0.00"
+                          placeholderTextColor={palette.muted}
+                          keyboardType="decimal-pad"
+                          autoFocus
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>What was it for? (Optional)</Text>
+                      <TextInput
+                        style={styles.textInput}
+                        value={expenseTitle}
+                        onChangeText={setExpenseTitle}
+                        placeholder={`e.g. ${selectedCategory?.name} today`}
+                        placeholderTextColor={palette.muted}
+                      />
+                    </View>
+
+                    <TouchableOpacity style={[styles.saveBtn, !expenseAmount && styles.saveBtnDisabled]} disabled={!expenseAmount} onPress={saveExpense}>
+                      <Text style={styles.saveBtnText}>Save Expense</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+                {/* 2. SETTINGS CONTENT */}
+                {activeModal === 'settings' && (
+                  <>
+                    <View style={styles.modalHeader}>
+                      <Text style={styles.modalTitle}>Update Allowance</Text>
+                      <TouchableOpacity onPress={() => closeAnimatedModal()}>
+                        <MaterialIcon name="close" size={28} color={palette.ink} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Weekly Budget Limit</Text>
+                      <View style={styles.amountInputWrapper}>
+                        <Text style={styles.pesoSign}>₱</Text>
+                        <TextInput
+                          style={styles.amountInput}
+                          value={budgetInput}
+                          onChangeText={(text) => setBudgetInput(text.replace(/[^0-9.]/g, ''))}
+                          placeholder="1500"
+                          placeholderTextColor={palette.muted}
+                          keyboardType="decimal-pad"
+                          autoFocus
+                        />
+                      </View>
+                    </View>
+
+                    <TouchableOpacity style={[styles.saveBtn, !budgetInput && styles.saveBtnDisabled]} disabled={!budgetInput} onPress={saveSettings}>
+                      <Text style={styles.saveBtnText}>Update Budget</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+                {/* 3. DUE CONTENT */}
+                {activeModal === 'due' && (
+                  <>
+                    <View style={styles.modalHeader}>
+                      <Text style={styles.modalTitle}>Add Academic Fee</Text>
+                      <TouchableOpacity onPress={() => closeAnimatedModal()}>
+                        <MaterialIcon name="close" size={28} color={palette.ink} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Fee Name</Text>
+                      <TextInput
+                        style={styles.textInput}
+                        value={dueTitle}
+                        onChangeText={setDueTitle}
+                        placeholder="e.g. Lab Manual"
+                        placeholderTextColor={palette.muted}
+                        autoFocus
+                      />
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Amount</Text>
+                      <View style={styles.amountInputWrapper}>
+                        <Text style={styles.pesoSign}>₱</Text>
+                        <TextInput
+                          style={styles.amountInput}
+                          value={dueAmount}
+                          onChangeText={(text) => setDueAmount(text.replace(/[^0-9.]/g, ''))}
+                          placeholder="0.00"
+                          placeholderTextColor={palette.muted}
+                          keyboardType="decimal-pad"
+                        />
+                      </View>
+                    </View>
+
+                    <TouchableOpacity style={[styles.saveBtn, (!dueTitle || !dueAmount) && styles.saveBtnDisabled]} disabled={!dueTitle || !dueAmount} onPress={saveDue}>
+                      <Text style={styles.saveBtnText}>Add Fee</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+
               </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Amount</Text>
-                <View style={styles.amountInputWrapper}>
-                  <Text style={styles.pesoSign}>₱</Text>
-                  <TextInput
-                    style={styles.amountInput}
-                    value={expenseAmount}
-                    onChangeText={(text) => setExpenseAmount(text.replace(/[^0-9.]/g, ''))}
-                    placeholder="0.00"
-                    placeholderTextColor={palette.muted}
-                    keyboardType="decimal-pad"
-                    autoFocus
-                  />
-                </View>
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>What was it for? (Optional)</Text>
-                <TextInput
-                  style={styles.textInput}
-                  value={expenseTitle}
-                  onChangeText={setExpenseTitle}
-                  placeholder={`e.g. ${selectedCategory?.name} today`}
-                  placeholderTextColor={palette.muted}
-                />
-              </View>
-
-              <TouchableOpacity style={[styles.saveBtn, !expenseAmount && styles.saveBtnDisabled]} disabled={!expenseAmount} onPress={saveExpense}>
-                <Text style={styles.saveBtnText}>Save Expense</Text>
-              </TouchableOpacity>
-            </View>
-          </KeyboardAvoidingView>
-        </TouchableWithoutFeedback>
-      </Modal>
-
-      {/* --- SETTINGS MODAL --- */}
-      <Modal visible={isSettingsModalOpen} transparent animationType="slide">
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Update Allowance</Text>
-                <TouchableOpacity onPress={() => setIsSettingsModalOpen(false)}>
-                  <MaterialIcon name="close" size={28} color={palette.ink} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Weekly Budget Limit</Text>
-                <View style={styles.amountInputWrapper}>
-                  <Text style={styles.pesoSign}>₱</Text>
-                  <TextInput
-                    style={styles.amountInput}
-                    value={budgetInput}
-                    onChangeText={(text) => setBudgetInput(text.replace(/[^0-9.]/g, ''))}
-                    placeholder="1500"
-                    placeholderTextColor={palette.muted}
-                    keyboardType="decimal-pad"
-                    autoFocus
-                  />
-                </View>
-              </View>
-
-              <TouchableOpacity style={[styles.saveBtn, !budgetInput && styles.saveBtnDisabled]} disabled={!budgetInput} onPress={saveSettings}>
-                <Text style={styles.saveBtnText}>Update Budget</Text>
-              </TouchableOpacity>
-            </View>
-          </KeyboardAvoidingView>
-        </TouchableWithoutFeedback>
-      </Modal>
-
-      {/* --- ADD FEE MODAL --- */}
-      <Modal visible={isDueModalOpen} transparent animationType="slide">
-        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Add Academic Fee</Text>
-                <TouchableOpacity onPress={() => setIsDueModalOpen(false)}>
-                  <MaterialIcon name="close" size={28} color={palette.ink} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Fee Name</Text>
-                <TextInput
-                  style={styles.textInput}
-                  value={dueTitle}
-                  onChangeText={setDueTitle}
-                  placeholder="e.g. Lab Manual"
-                  placeholderTextColor={palette.muted}
-                  autoFocus
-                />
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Amount</Text>
-                <View style={styles.amountInputWrapper}>
-                  <Text style={styles.pesoSign}>₱</Text>
-                  <TextInput
-                    style={styles.amountInput}
-                    value={dueAmount}
-                    onChangeText={(text) => setDueAmount(text.replace(/[^0-9.]/g, ''))}
-                    placeholder="0.00"
-                    placeholderTextColor={palette.muted}
-                    keyboardType="decimal-pad"
-                  />
-                </View>
-              </View>
-
-              <TouchableOpacity style={[styles.saveBtn, (!dueTitle || !dueAmount) && styles.saveBtnDisabled]} disabled={!dueTitle || !dueAmount} onPress={saveDue}>
-                <Text style={styles.saveBtnText}>Add Fee</Text>
-              </TouchableOpacity>
-            </View>
-          </KeyboardAvoidingView>
-        </TouchableWithoutFeedback>
+            </KeyboardAvoidingView>
+          </Animated.View>
+        </View>
       </Modal>
 
     </View>
@@ -529,8 +561,9 @@ const styles = StyleSheet.create({
   checkboxActive: { backgroundColor: palette.primary, borderColor: palette.primary },
   deleteDueBtn: { padding: 8, marginLeft: 8 },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: palette.bg, borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: spacing.xl, paddingBottom: Platform.OS === 'ios' ? 40 : 20 },
+  modalOverlay: { flex: 1, justifyContent: 'flex-end' },
+  modalContentWrapper: { width: '100%', shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.15, shadowRadius: 16, elevation: 20 },
+  modalContent: { backgroundColor: palette.bg, borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: spacing.xl, paddingBottom: Platform.OS === 'ios' ? 40 : 24 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xl },
   modalTitle: { fontSize: 22, fontWeight: '700', color: palette.ink },
 
