@@ -16,6 +16,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 
 import { palette, spacing } from '../../../tokens';
 import { database } from '../../../core/database';
+import { syncScheduleToWidget } from '../../../core/widgets/widgetSync';
 import Subject from '../../../core/database/models/Subject';
 
 const HOUR_HEIGHT = 60;
@@ -258,6 +259,8 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
           await parentSchedule.destroyPermanently();
         }
       });
+
+      await syncScheduleToWidget();
     } catch (error) {
       console.error("Delete failed", error);
     } finally {

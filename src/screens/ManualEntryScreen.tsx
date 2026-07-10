@@ -21,6 +21,7 @@ import { Q } from '@nozbe/watermelondb';
 
 import { palette, spacing } from '../tokens';
 import { database } from '../core/database';
+import { syncScheduleToWidget } from '../core/widgets/widgetSync';
 import Schedule from '../core/database/models/Schedule';
 import Subject from '../core/database/models/Subject';
 import { NotificationService } from '../core/notifications/NotificationService';
@@ -454,6 +455,8 @@ export function ManualEntryScreen({ navigation, route }: any) {
           sch.academicTerm = semester;
           if (declaredTotalUnits) sch.totalSubjects = parseInt(declaredTotalUnits, 10);
         });
+
+        await syncScheduleToWidget();
       });
     } catch (dbError) {
       if (__DEV__) {
