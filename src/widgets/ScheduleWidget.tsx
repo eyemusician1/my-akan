@@ -5,7 +5,6 @@ export interface WidgetSubject {
   code: string;
   room: string;
   time: string;
-  // Strictly typed as ColorProp so TypeScript accepts hex colors
   color?: ColorProp;
 }
 
@@ -23,18 +22,17 @@ export function ScheduleWidget({
       style={{
         height: 'match_parent',
         width: 'match_parent',
-        backgroundColor: '#1E1F22', // M3 Surface Dark
+        backgroundColor: '#121212', // Trakn Deep Background
         borderRadius: 24,
         paddingHorizontal: 18,
         paddingVertical: 16,
         flexDirection: 'column',
       }}
     >
-      {/* Top Header Row: Date + Quick Add FAB */}
+      {/* Header Row: Date + Quick Add FAB */}
       <FlexWidget
         style={{
           flexDirection: 'row',
-          // FIX: Changed from 'space_between' to 'space-between'
           justifyContent: 'space-between',
           alignItems: 'center',
           width: 'match_parent',
@@ -46,19 +44,19 @@ export function ScheduleWidget({
           style={{
             fontSize: 20,
             fontWeight: 'bold',
-            color: '#E2E2E6',
+            color: '#FFFFFF',
             letterSpacing: -0.3,
           }}
         />
 
-        {/* Circular M3 Accent FAB */}
+        {/* Trakn Gold FAB */}
         <FlexWidget
           clickAction="OPEN_APP_TO_ADD"
           style={{
             width: 38,
             height: 38,
             borderRadius: 19,
-            backgroundColor: '#A8C7FA', // M3 Primary Blue Accent
+            backgroundColor: '#C5A059', // Trakn Warm Gold
             justifyContent: 'center',
             alignItems: 'center',
           }}
@@ -68,7 +66,7 @@ export function ScheduleWidget({
             style={{
               fontSize: 24,
               fontWeight: 'bold',
-              color: '#062E6F',
+              color: '#121212', // Dark Ink Text
             }}
           />
         </FlexWidget>
@@ -77,10 +75,11 @@ export function ScheduleWidget({
       {/* Content Area */}
       {subjects.length === 0 ? (
         <FlexWidget
+          clickAction="OPEN_APP"
           style={{
             flex: 1,
             width: 'match_parent',
-            backgroundColor: '#2A2C30', // Surface Container Tonal
+            backgroundColor: '#1C1C1E', // Tonal Card Background
             borderRadius: 18,
             justifyContent: 'center',
             alignItems: 'center',
@@ -110,14 +109,13 @@ export function ScheduleWidget({
               clickAction="OPEN_APP"
               style={{
                 width: 'match_parent',
-                backgroundColor: '#2A2C30',
+                backgroundColor: '#1C1C1E',
                 borderRadius: 14,
                 paddingVertical: 10,
                 paddingHorizontal: 14,
                 marginBottom: index < Math.min(subjects.length, 3) - 1 ? 8 : 0,
                 borderLeftWidth: 4,
-                // FIX: Explicitly cast fallback to ColorProp to satisfy TypeScript compiler
-                borderLeftColor: (subj.color || '#A8C7FA') as ColorProp,
+                borderLeftColor: (subj.color || '#C5A059') as ColorProp,
               }}
             >
               <TextWidget

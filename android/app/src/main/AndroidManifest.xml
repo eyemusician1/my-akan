@@ -3,21 +3,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
-    <!-- FIXED: Added the missing closing bracket to the line below -->
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
     <!-- ========================================================= -->
     <!-- NOTIFEE BACKGROUND ALARM & REBOOT SURVIVAL PERMISSIONS -->
     <!-- ========================================================= -->
-    <!-- Allows the app to light up the screen and vibrate -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Reschedules all your class alarms automatically if the user restarts their phone -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Obligatory for displaying push alerts on Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Grants background OS clock-timing clearance -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <!-- Ultimate override: Bypasses Android 14's default alarm denial -->
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <application
@@ -40,13 +34,24 @@
         android:launchMode="singleTask"
         android:windowSoftInputMode="adjustResize"
         android:exported="true">
+
+        <!-- Default App Launcher Intent -->
         <intent-filter>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
+
+        <!-- Deep Link Intent (Fixed) -->
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="trakn" android:host="home" />
+        </intent-filter>
       </activity>
 
-      <receiver android:name=".widget.ScheduleWidget" android:exported="true">
+      <!-- React Native Android Widget Receiver (Fixed) -->
+      <receiver android:name="com.reactnativeandroidwidget.RNWidgetProvider" android:exported="true">
         <intent-filter>
             <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
         </intent-filter>
