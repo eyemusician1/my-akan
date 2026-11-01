@@ -1,4 +1,5 @@
 import React from 'react';
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Q } from '@nozbe/watermelondb';
 import { requestWidgetUpdate } from 'react-native-android-widget';
@@ -9,6 +10,7 @@ import { WidgetSubject } from '../../widgets/ScheduleWidget';
 import { ScheduleWidget } from '../../widgets/ScheduleWidget';
 
 export async function syncScheduleToWidget() {
+  if (Platform.OS !== 'android') return;
   try {
     const today = new Date();
     const dayMap: Record<number, string> = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' };
@@ -50,5 +52,6 @@ export async function syncScheduleToWidget() {
 
   } catch (error) {
     console.error('[WidgetSync] Failed to sync schedule to widget:', error);
+    throw error;
   }
 }

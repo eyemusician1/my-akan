@@ -3,6 +3,7 @@ import { View, StyleSheet, Animated, Image, Text } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CommonActions } from '@react-navigation/native';
+import { RootStackParamList } from './types';
 
 import { palette } from '../tokens';
 import { WelcomeScreen } from '../screens/WelcomeScreen';
@@ -15,10 +16,10 @@ import { ScannerScreen } from '../screens/ScannerScreen';
 import { RecentSchedulesScreen } from '../screens/RecentSchedulesScreen';
 import { PaymentsScreen } from '../screens/PaymentsScreen';
 
-const Stack = createNativeStackNavigator();
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export function AppNavigator() {
-  const [initialRoute, setInitialRoute] = useState<string | null>(null);
+  const [initialRoute, setInitialRoute] = useState<keyof RootStackParamList | null>(null);
   const [isSplashVisible, setIsSplashVisible] = useState(true);
 
   // Controls the fade-out animation

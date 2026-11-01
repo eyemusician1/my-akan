@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -17,14 +17,15 @@ import {
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Q } from '@nozbe/watermelondb';
 
 import { palette, spacing } from '../tokens';
-import { database } from '../core/database';
-import { syncScheduleToWidget } from '../core/widgets/widgetSync';
-import Schedule from '../core/database/models/Schedule';
-import Subject from '../core/database/models/Subject';
-import { NotificationService } from '../core/notifications/NotificationService';
+import { useToast } from '../shared/hooks/useToast';
+import { scheduleRepository } from '../features/schedule/data';
+import { scheduleService } from '../features/schedule/services/scheduleService';
+import { getUnitLimit, normalizeSemester, ScheduleValidationError } from '../features/schedule/domain/rules';
+import { SubjectDraft } from '../features/schedule/domain/types';
+import { toTimeInput } from '../features/schedule/domain/time';
+import { AppScreenProps } from '../navigation/types';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -42,24 +43,7 @@ const DAYS_OF_WEEK = [
 const TERMS = ['1st Sem', '2nd Sem', 'Summer'];
 const UNITS = [1, 2, 3, 4, 5, 6];
 
-const timeToDecimal = (time: string, period: string) => {
-  let [hours, minutes] = time.split(':').map(Number);
-  if (isNaN(hours) || isNaN(minutes)) return 0;
-  if (period.toUpperCase() === 'PM' && hours !== 12) hours += 12;
-  if (period.toUpperCase() === 'AM' && hours === 12) hours = 0;
-  return hours + (minutes / 60);
-};
-
-const normalizeSemester = (raw: string | undefined) => {
-  if (!raw) return '';
-  const lower = raw.toLowerCase();
-  if (lower.includes('1') || lower.includes('first')) return '1st Sem';
-  if (lower.includes('2') || lower.includes('second')) return '2nd Sem';
-  if (lower.includes('sum')) return 'Summer';
-  return '1st Sem';
-};
-
-export function ManualEntryScreen({ navigation, route }: any) {
+export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualEntry'>) {
   const insets = useSafeAreaInsets();
 
   const editSubjectId = route?.params?.editSubjectId;
@@ -68,8 +52,11 @@ export function ManualEntryScreen({ navigation, route }: any) {
   const normalizedExtracted = rawExtractedSemester ? normalizeSemester(rawExtractedSemester) : '';
 
   const initialQueue = route?.params?.extractedSubjects || [];
-  const [reviewQueue, setReviewQueue] = useState<any[]>(initialQueue);
+  const [reviewQueue, setReviewQueue] = useState<SubjectDraft[]>(initialQueue);
   const totalScanned = useRef(initialQueue.length).current;
+
+  const [isSaving, setIsSaving] = useState(false);
+  const saveInProgress = useRef(false);
 
   const [semester, setSemester] = useState(normalizedExtracted || '1st Sem');
   const [declaredTotalUnits, setDeclaredTotalUnits] = useState('');
@@ -104,31 +91,9 @@ export function ManualEntryScreen({ navigation, route }: any) {
   const instructorRef = useRef<TextInput>(null);
   const endTimeRef = useRef<TextInput>(null);
 
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const toastOpacity = useRef(new Animated.Value(0)).current;
-  const toastTranslateY = useRef(new Animated.Value(15)).current;
-  const toastTimerRef = useRef<any>(null);
+  const {message: toastMessage, opacity: toastOpacity, translateY: toastTranslateY, showToast: showLocalToast} = useToast();
 
-  const showLocalToast = useCallback((msg: string) => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToastMessage(msg);
-    toastOpacity.setValue(0);
-    toastTranslateY.setValue(15);
-
-    Animated.parallel([
-      Animated.timing(toastOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
-      Animated.spring(toastTranslateY, { toValue: 0, useNativeDriver: true, speed: 12 }),
-    ]).start();
-
-    toastTimerRef.current = setTimeout(() => {
-      Animated.parallel([
-        Animated.timing(toastOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
-        Animated.timing(toastTranslateY, { toValue: 15, duration: 200, useNativeDriver: true }),
-      ]).start(() => setToastMessage(null));
-    }, 2500);
-  }, []);
-
-  const maxUnits = semester === 'Summer' ? 6 : 24;
+  const maxUnits = getUnitLimit(semester);
 
   const handleDeclaredUnitsChange = (text: string) => {
     let cleaned = text.replace(/[^0-9]/g, '');
@@ -145,7 +110,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
     Keyboard.dismiss();
     if (term !== semester) {
       setSemester(term);
-      const newMax = term === 'Summer' ? 6 : 24;
+      const newMax = getUnitLimit(term);
       const currentDeclared = parseInt(declaredTotalUnits, 10);
 
       if (!isNaN(currentDeclared) && currentDeclared > newMax) {
@@ -196,7 +161,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
     if (editSubjectId) {
       const loadSubject = async () => {
         try {
-          const subject = await database.get<Subject>('subjects').find(editSubjectId);
+          const subject = await scheduleRepository.findSubject(editSubjectId);
           const sched = await subject.schedule.fetch();
 
           setSemester(sched.academicTerm);
@@ -210,15 +175,12 @@ export function ManualEntryScreen({ navigation, route }: any) {
           setInstructor(subject.instructor || '');
           setSelectedDays(subject.days);
 
-          let [sTime, sAmPm] = subject.startTime.split(' ');
-          if (sTime.length === 4) sTime = `0${sTime}`;
-          setStartTime(sTime);
-          setStartAmPm(sAmPm as any);
-
-          let [eTime, eAmPm] = subject.endTime.split(' ');
-          if (eTime.length === 4) eTime = `0${eTime}`;
-          setEndTime(eTime);
-          setEndAmPm(eAmPm as any);
+          const start = toTimeInput(subject.startTime);
+          const end = toTimeInput(subject.endTime);
+          setStartTime(start.time);
+          setStartAmPm(start.period);
+          setEndTime(end.time);
+          setEndAmPm(end.period);
         } catch (e) {
           console.error("Failed to load subject", e);
         }
@@ -234,25 +196,12 @@ export function ManualEntryScreen({ navigation, route }: any) {
       setInstructor(current.instructor || '');
       setSelectedDays(current.days || []);
 
-      if (current.startTime) {
-        let [sTime, sAmPm] = current.startTime.split(' ');
-        if (sTime.length === 4) sTime = `0${sTime}`;
-        setStartTime(sTime);
-        setStartAmPm(sAmPm as any);
-      } else {
-        setStartTime('');
-        setStartAmPm('AM');
-      }
-
-      if (current.endTime) {
-        let [eTime, eAmPm] = current.endTime.split(' ');
-        if (eTime.length === 4) eTime = `0${eTime}`;
-        setEndTime(eTime);
-        setEndAmPm(eAmPm as any);
-      } else {
-        setEndTime('');
-        setEndAmPm('AM');
-      }
+      const start = toTimeInput(current.startTime);
+      const end = toTimeInput(current.endTime);
+      setStartTime(start.time);
+      setStartAmPm(start.period);
+      setEndTime(end.time);
+      setEndAmPm(end.period);
     }
   }, [editSubjectId, reviewQueue]);
 
@@ -260,37 +209,25 @@ export function ManualEntryScreen({ navigation, route }: any) {
     if (editSubjectId || reviewQueue.length > 0 || normalizedExtracted) return;
 
     const initRecentTerm = async () => {
-      const recent = await database.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).fetch();
-      if (recent.length > 0) {
-        setSemester(recent[0].academicTerm);
+      const recent = await scheduleRepository.getLatestSchedule();
+      if (recent) {
+        setSemester(recent.academicTerm);
       }
     };
     initRecentTerm();
   }, [editSubjectId, reviewQueue, normalizedExtracted]);
 
   useEffect(() => {
-    if (editSubjectId) return;
-
     let isMounted = true;
     const loadTermData = async () => {
       try {
-        const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
-        if (schedules.length > 0 && isMounted) {
-          const sch = schedules[0];
-          const fetchedSubjects = await sch.subjects.fetch();
-
-          setDeclaredTotalUnits(sch.totalSubjects ? sch.totalSubjects.toString() : '');
-          setAddedCount(fetchedSubjects.length);
-
-          const totalU = fetchedSubjects.reduce((sum: number, s: Subject) => sum + s.units, 0);
-          setTotalAddedUnits(totalU);
-        } else if (isMounted) {
-          setDeclaredTotalUnits('');
-          setAddedCount(0);
-          setTotalAddedUnits(0);
-        }
-      } catch (e) {
-        console.error(e);
+        const summary = await scheduleRepository.getTermSummary(semester);
+        if (!isMounted) return;
+        setDeclaredTotalUnits(summary.declaredUnits?.toString() || '');
+        if (!editSubjectId) setAddedCount(summary.subjectCount);
+        setTotalAddedUnits(summary.totalUnits);
+      } catch (error) {
+        console.error('Failed to load term summary', error);
       }
     };
 
@@ -357,176 +294,71 @@ export function ManualEntryScreen({ navigation, route }: any) {
     (newTotalAfterSave < maxUnits) &&
     (isNaN(declaredLimitNum) || newTotalAfterSave < declaredLimitNum);
 
-  const checkTimeConflict = async () => {
-    if (selectedDays.length === 0 || !startTime || !endTime) return false;
-
-    const newStart = timeToDecimal(startTime, startAmPm);
-    const newEnd = timeToDecimal(endTime, endAmPm);
-
-    if (newStart >= newEnd) {
-      setCustomAlert({ visible: true, title: "Invalid Time", message: "The end time must be later than the start time." });
-      return true;
-    }
-
-    const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
-    if (schedules.length === 0) return false;
-
-    const fetchedSubjects = await schedules[0].subjects.fetch();
-
-    for (const subj of fetchedSubjects) {
-      if (editSubjectId && subj.id === editSubjectId) continue;
-
-      const hasSharedDays = selectedDays.some(d => subj.days.includes(d));
-      if (!hasSharedDays) continue;
-
-      if (!subj.startTime || !subj.endTime) continue;
-
-      const [sTime, sPeriod] = subj.startTime.split(' ');
-      const [eTime, ePeriod] = subj.endTime.split(' ');
-
-      const existStart = timeToDecimal(sTime, sPeriod);
-      const existEnd = timeToDecimal(eTime, ePeriod);
-
-      if (newStart < existEnd && newEnd > existStart) {
-        setCustomAlert({
-          visible: true,
-          title: "Schedule Conflict",
-          message: `This time overlaps with ${subj.code} (${subj.startTime} - ${subj.endTime}) on shared days. Please adjust the time.`
-        });
-        return true;
-      }
-    }
-    return false;
-  };
-
-  const saveToDatabase = async () => {
-    try {
-      await database.write(async () => {
-        const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
-        let currentSchedule = schedules[0];
-
-        if (!currentSchedule) {
-          currentSchedule = await database.get<Schedule>('schedules').create((sch: any) => {
-            sch.academicTerm = semester;
-            if (declaredTotalUnits) sch.totalSubjects = parseInt(declaredTotalUnits, 10);
-          });
-        }
-
-        const finalStartTime = startTime ? `${startTime} ${startAmPm}` : '';
-        const finalEndTime = endTime ? `${endTime} ${endAmPm}` : '';
-
-        if (editSubjectId) {
-          const subjectToUpdate = await database.get<Subject>('subjects').find(editSubjectId);
-          const oldSchedule = await subjectToUpdate.schedule.fetch();
-
-          await subjectToUpdate.update((subj: any) => {
-            subj.schedule.set(currentSchedule);
-            subj.code = code;
-            subj.section = section;
-            subj.title = title;
-            subj.units = units;
-            subj.room = room;
-            subj.instructor = instructor;
-            subj.days = selectedDays;
-            subj.startTime = finalStartTime;
-            subj.endTime = finalEndTime;
-          });
-
-          if (oldSchedule.id !== currentSchedule.id) {
-            const count = await oldSchedule.subjects.fetchCount();
-            if (count === 0) await oldSchedule.destroyPermanently();
-          }
-        } else {
-          await database.get<Subject>('subjects').create((subj: any) => {
-            subj.schedule.set(currentSchedule);
-            subj.code = code;
-            subj.section = section;
-            subj.title = title;
-            subj.units = units;
-            subj.room = room;
-            subj.instructor = instructor;
-            subj.days = selectedDays;
-            subj.startTime = finalStartTime;
-            subj.endTime = finalEndTime;
-          });
-        }
-
-        await currentSchedule.update((sch: any) => {
-          sch.academicTerm = semester;
-          if (declaredTotalUnits) sch.totalSubjects = parseInt(declaredTotalUnits, 10);
-        });
-
-        await syncScheduleToWidget();
-      });
-    } catch (dbError) {
-      if (__DEV__) {
-        console.log('WatermelonDB commit note:', dbError);
-      }
-    }
-  };
-
-  const handleSaveAndAddAnother = async () => {
+  const saveSubject = async (finish: boolean) => {
+    if (saveInProgress.current || !isFormValid) return;
     Keyboard.dismiss();
-    const hasConflict = await checkTimeConflict();
-    if (hasConflict) return;
-
-    await saveToDatabase();
-    showLocalToast('Subject added');
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-
-    setAddedCount(prev => prev + 1);
-    setTotalAddedUnits(prev => prev + units);
-
-    if (reviewQueue.length > 1) {
-      setReviewQueue(prev => prev.slice(1));
-    } else {
-      setReviewQueue([]);
-      setCode('');
-      setSection('');
-      setTitle('');
-      setUnits(3);
-      setRoom('');
-      setInstructor('');
-      setSelectedDays([]);
-      setStartTime('');
-      setEndTime('');
-      setIsUnitsOpen(false);
-    }
-  };
-
-  const handleSaveAndFinish = async () => {
-    Keyboard.dismiss();
-
-    // NEW LOGIC: Prevent saving empty subjects if the user is just exiting the completed state.
     if (isDeclaredUnitLimitReached && code.trim().length === 0) {
       DeviceEventEmitter.emit('SHOW_TOAST', 'Schedule setup complete');
-      setTimeout(() => { navigation.goBack(); }, 50);
+      navigation.goBack();
       return;
     }
 
-    const hasConflict = await checkTimeConflict();
-    if (hasConflict) return;
-
+    saveInProgress.current = true;
+    setIsSaving(true);
     try {
-      await saveToDatabase();
+      const { syncIssues } = await scheduleService.saveSubject({
+        academicTerm: semester,
+        declaredUnits: declaredTotalUnits ? Number(declaredTotalUnits) : undefined,
+        subjectId: editSubjectId,
+        subject: {
+          code, section, title, units, room, instructor,
+          days: selectedDays,
+          startTime: startTime ? `${startTime} ${startAmPm}` : '',
+          endTime: endTime ? `${endTime} ${endAmPm}` : '',
+        },
+      });
+      const message = syncIssues.length
+        ? `Subject saved; could not refresh ${syncIssues.join(' and ')}`
+        : editSubjectId ? 'Subject updated' : finish ? 'Schedule saved' : 'Subject added';
 
-      const schedules = await database.get<Schedule>('schedules').query(Q.where('academic_term', semester)).fetch();
-      if (schedules[0]) {
-        const securelySavedSubjects = await schedules[0].subjects.fetch();
-        if (__DEV__) {
-          console.log(`[NOTIFEE] Queuing alarms for ${securelySavedSubjects.length} subjects...`);
+      if (finish) {
+        DeviceEventEmitter.emit('SHOW_TOAST', message);
+        navigation.goBack();
+      } else {
+        showLocalToast(message);
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setAddedCount(prev => prev + 1);
+        setTotalAddedUnits(prev => prev + units);
+        if (reviewQueue.length > 1) {
+          setReviewQueue(prev => prev.slice(1));
+        } else {
+          setReviewQueue([]);
+          setCode('');
+          setSection('');
+          setTitle('');
+          setUnits(3);
+          setRoom('');
+          setInstructor('');
+          setSelectedDays([]);
+          setStartTime('');
+          setEndTime('');
+          setIsUnitsOpen(false);
         }
-        await NotificationService.syncScheduleAlarms(securelySavedSubjects);
       }
-
-      DeviceEventEmitter.emit('SHOW_TOAST', editSubjectId ? 'Subject updated' : 'Schedule saved');
-      setTimeout(() => { navigation.goBack(); }, 50);
-
     } catch (error) {
-      console.error("Save & Finish DB Error:", error);
-      setCustomAlert({ visible: true, title: "Save failed", message: "Could not commit changes." });
+      setCustomAlert({
+        visible: true,
+        title: error instanceof ScheduleValidationError ? error.title : 'Save failed',
+        message: error instanceof ScheduleValidationError ? error.message : 'Could not commit changes. Please try again.',
+      });
+    } finally {
+      saveInProgress.current = false;
+      setIsSaving(false);
     }
   };
+
+  const handleSaveAndAddAnother = () => saveSubject(false);
+  const handleSaveAndFinish = () => saveSubject(true);
 
   return (
     <KeyboardAvoidingView
@@ -753,7 +585,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
                           if (formatted.length === 5) endTimeRef.current?.focus();
                         }}
                         onSubmitEditing={() => endTimeRef.current?.focus()}
-                        placeholder="8:00"
+                        placeholder="08:00"
                         placeholderTextColor={palette.muted}
                         keyboardType="number-pad"
                         maxLength={5}
@@ -782,7 +614,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
                           if (formatted.length === 5) Keyboard.dismiss();
                         }}
                         onSubmitEditing={() => Keyboard.dismiss()}
-                        placeholder="5:00"
+                        placeholder="05:00"
                         placeholderTextColor={palette.muted}
                         keyboardType="number-pad"
                         maxLength={5}
@@ -825,7 +657,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
               <TouchableOpacity
                 style={[styles.addAnotherButton, !canAddAnother && styles.addAnotherDisabled]}
                 activeOpacity={0.7}
-                disabled={!canAddAnother}
+                disabled={isSaving || !canAddAnother}
                 onPress={handleSaveAndAddAnother}
               >
                 <MaterialIcon name="add" size={20} color={canAddAnother ? palette.primary : palette.muted} />
@@ -836,7 +668,7 @@ export function ManualEntryScreen({ navigation, route }: any) {
             <TouchableOpacity
               style={[styles.fabSave, !isFormValid && styles.fabSaveDisabled]}
               activeOpacity={0.9}
-              disabled={!isFormValid}
+              disabled={isSaving || !isFormValid}
               onPress={() => {
                 if (reviewQueue.length > 1) {
                   handleSaveAndAddAnother();

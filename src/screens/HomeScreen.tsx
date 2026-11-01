@@ -18,10 +18,13 @@ import withObservables from '@nozbe/with-observables';
 import { Q } from '@nozbe/watermelondb';
 
 import { palette, spacing } from '../tokens';
+import { useToast } from '../shared/hooks/useToast';
 import { ScheduleView } from '../features/schedule/components/ScheduleView';
 import { database } from '../core/database';
 import Schedule from '../core/database/models/Schedule';
 import Subject from '../core/database/models/Subject';
+import { scheduleRepository } from '../features/schedule/data';
+import { refreshScheduleIntegrations } from '../features/schedule/services/scheduleService';
 
 // Import our offline schematic map modal and parser
 import { CampusMapModal, locateBuildingByRoom } from './CampusMapModal';
@@ -59,7 +62,7 @@ const ScheduleCardItemUI = ({ schedule, subjects }: { schedule: Schedule, subjec
     );
   }
 
-  const targetDate = (schedule as any).updatedAt || schedule.createdAt;
+  const targetDate = schedule.createdAt;
 
   return (
     <Pressable
@@ -72,7 +75,7 @@ const ScheduleCardItemUI = ({ schedule, subjects }: { schedule: Schedule, subjec
       <View style={styles.cardTextGroup}>
         <Text style={styles.cardTitle}>{schedule.academicTerm} Schedule</Text>
         <Text style={styles.cardSubtitle}>
-          {subjectCount} subject{subjectCount !== 1 ? 's' : ''} • Updated {getTimeAgo(targetDate)}
+          {subjectCount} subject{subjectCount !== 1 ? 's' : ''} • Added {getTimeAgo(targetDate)}
         </Text>
       </View>
     </Pressable>
@@ -146,29 +149,7 @@ export function HomeScreen({ navigation }: any) {
   const [isMapModalVisible, setIsMapModalVisible] = useState(false);
   const [targetBuildingId, setTargetBuildingId] = useState<string | null>(null);
 
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const toastOpacity = useRef(new Animated.Value(0)).current;
-  const toastTranslateY = useRef(new Animated.Value(15)).current;
-  const toastTimerRef = useRef<any>(null);
-
-  const triggerToast = useCallback((msg: string) => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToastMessage(msg);
-    toastOpacity.setValue(0);
-    toastTranslateY.setValue(15);
-
-    Animated.parallel([
-      Animated.timing(toastOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
-      Animated.spring(toastTranslateY, { toValue: 0, useNativeDriver: true, speed: 12 }),
-    ]).start();
-
-    toastTimerRef.current = setTimeout(() => {
-      Animated.parallel([
-        Animated.timing(toastOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
-        Animated.timing(toastTranslateY, { toValue: 15, duration: 200, useNativeDriver: true }),
-      ]).start(() => setToastMessage(null));
-    }, 2500);
-  }, []);
+  const {message: toastMessage, opacity: toastOpacity, translateY: toastTranslateY, showToast: triggerToast} = useToast();
 
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener('SHOW_TOAST', triggerToast);
@@ -233,21 +214,7 @@ export function HomeScreen({ navigation }: any) {
 
       const cleanupEmptySchedules = async () => {
         try {
-          const schedules = await database.get<Schedule>('schedules').query().fetch();
-          const emptySchedules: Schedule[] = [];
-
-          for (const sch of schedules) {
-            const count = await sch.subjects.fetchCount();
-            if (count === 0) emptySchedules.push(sch);
-          }
-
-          if (emptySchedules.length > 0) {
-            await database.write(async () => {
-              for (const sch of emptySchedules) {
-                await sch.destroyPermanently();
-              }
-            });
-          }
+          await scheduleRepository.cleanupEmptySchedules();
         } catch (error) {
           console.error("Cleanup failed", error);
         }
@@ -257,7 +224,7 @@ export function HomeScreen({ navigation }: any) {
 
       if (!didRunCleanupRef.current) {
         didRunCleanupRef.current = true;
-        cleanupEmptySchedules();
+        cleanupEmptySchedules().then(() => refreshScheduleIntegrations());
       }
     }, [])
   );

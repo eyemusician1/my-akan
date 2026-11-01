@@ -8,7 +8,8 @@ import {
   Modal,
   DeviceEventEmitter,
   ScrollView,
-  Animated
+  Animated,
+  Alert
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import withObservables from '@nozbe/with-observables';
@@ -16,7 +17,8 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 
 import { palette, spacing } from '../../../tokens';
 import { database } from '../../../core/database';
-import { syncScheduleToWidget } from '../../../core/widgets/widgetSync';
+import { scheduleService } from '../services/scheduleService';
+import { timeToDecimal } from '../domain/time';
 import Subject from '../../../core/database/models/Subject';
 
 const HOUR_HEIGHT = 60;
@@ -27,25 +29,6 @@ const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const getDayLabel = (days: string[]) => {
   const map: Record<string, string> = { Mon: 'M', Tue: 'T', Wed: 'W', Thu: 'TH', Fri: 'F', Sat: 'S' };
   return days.map(d => map[d] || d).join('');
-};
-
-const timeToDecimal = (timeStr: string) => {
-  if (!timeStr) return 0;
-  try {
-    const parts = timeStr.trim().split(' ');
-    const time = parts[0];
-    const period = parts[1] || 'AM';
-
-    let [hours, minutes] = time.split(':').map(Number);
-    if (isNaN(hours) || isNaN(minutes)) return 0;
-
-    if (period.toUpperCase() === 'PM' && hours !== 12) hours += 12;
-    if (period.toUpperCase() === 'AM' && hours === 12) hours = 0;
-
-    return hours + (minutes / 60);
-  } catch (e) {
-    return 0;
-  }
 };
 
 const formatHour = (hour: number) => {
@@ -108,6 +91,8 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
 
   // Controls Delete Confirmation Dialog
   const [itemToDelete, setItemToDelete] = useState<any>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const deleteInProgress = useRef(false);
 
   const [tick, setTick] = useState(0);
   const prevSubjectsRef = useRef<any[] | null>(null);
@@ -246,25 +231,21 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
   };
 
   const confirmDelete = async () => {
-    if (!itemToDelete) return;
+    if (!itemToDelete || deleteInProgress.current) return;
+    deleteInProgress.current = true;
+    setIsDeleting(true);
     try {
-      await database.write(async () => {
-        const subjectModel = itemToDelete.rawModel;
-        const parentSchedule = await subjectModel.schedule.fetch();
-        const countBefore = await parentSchedule.subjects.fetchCount();
-
-        await subjectModel.destroyPermanently();
-
-        if (countBefore <= 1) {
-          await parentSchedule.destroyPermanently();
-        }
-      });
-
-      await syncScheduleToWidget();
+      const syncIssues = await scheduleService.deleteSubject(itemToDelete.id);
+      if (syncIssues.length) {
+        Alert.alert('Class removed', `Could not refresh ${syncIssues.join(' and ')}. Reopen the app to retry.`);
+      }
     } catch (error) {
       console.error("Delete failed", error);
+      Alert.alert('Delete failed', 'Could not remove this class. Please try again.');
     } finally {
       setItemToDelete(null);
+      deleteInProgress.current = false;
+      setIsDeleting(false);
     }
   };
 
@@ -489,10 +470,10 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
             </Text>
 
             <View style={styles.dialogActions}>
-              <TouchableOpacity style={styles.dialogBtn} onPress={() => setItemToDelete(null)}>
+              <TouchableOpacity style={styles.dialogBtn} disabled={isDeleting} onPress={() => setItemToDelete(null)}>
                 <Text style={[styles.dialogBtnText, { color: palette.ink }]}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.dialogBtn} onPress={confirmDelete}>
+              <TouchableOpacity style={styles.dialogBtn} disabled={isDeleting} onPress={confirmDelete}>
                 <Text style={[styles.dialogBtnText, { color: palette.primary }]}>Remove</Text>
               </TouchableOpacity>
             </View>

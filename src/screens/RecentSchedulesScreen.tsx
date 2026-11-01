@@ -7,7 +7,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Modal,
-  DeviceEventEmitter
+  DeviceEventEmitter,
+  Alert
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,6 +19,7 @@ import { palette, spacing } from '../tokens';
 import { database } from '../core/database';
 import Schedule from '../core/database/models/Schedule';
 import Subject from '../core/database/models/Subject';
+import { scheduleService } from '../features/schedule/services/scheduleService';
 
 // 1. REACTIVE READ-ONLY ROSTER BODY
 const ScheduleRosterUI = ({ schedule, subjects, navigation }: { schedule: Schedule, subjects: Subject[], navigation: any }) => {
@@ -29,17 +31,12 @@ const ScheduleRosterUI = ({ schedule, subjects, navigation }: { schedule: Schedu
   const handleDeleteEntireSchedule = async () => {
     setIsDeleting(true);
     try {
-      await database.write(async () => {
-        const batchOps: any[] = [];
-        for (const subj of subjects) {
-          batchOps.push(subj.prepareDestroyPermanently());
-        }
-        batchOps.push(schedule.prepareDestroyPermanently());
-        await database.batch(...batchOps);
-      });
+      const syncIssues = await scheduleService.deleteSchedule(schedule.id);
 
       setIsDeleteModalOpen(false);
-      DeviceEventEmitter.emit('SHOW_TOAST', 'Schedule deleted');
+      DeviceEventEmitter.emit('SHOW_TOAST', syncIssues.length
+        ? `Schedule deleted; could not refresh ${syncIssues.join(' and ')}`
+        : 'Schedule deleted');
 
       setTimeout(() => {
         navigation.goBack();
@@ -47,6 +44,7 @@ const ScheduleRosterUI = ({ schedule, subjects, navigation }: { schedule: Schedu
     } catch (error) {
       console.error("Failed to batch delete schedule:", error);
       setIsDeleting(false);
+      Alert.alert('Delete failed', 'Could not remove this schedule. Please try again.');
     }
   };
 
