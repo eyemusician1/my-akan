@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -12,135 +12,26 @@ import {
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import withObservables from '@nozbe/with-observables';
-import { Q } from '@nozbe/watermelondb';
 
 import { palette, spacing } from '../tokens';
 import { useToast } from '../shared/hooks/useToast';
 import { ScheduleView } from '../features/schedule/components/ScheduleView';
-import { database } from '../core/database';
-import Schedule from '../core/database/models/Schedule';
-import Subject from '../core/database/models/Subject';
+import {RecentOverview} from '../features/schedule/components/RecentOverview';
+import {ArchiveOverview} from '../features/schedule/components/ArchiveOverview';
+import {GradeBook} from '../features/grades/components/GradeBook';
+import {AppScreenProps} from '../navigation/types';
 import { scheduleRepository } from '../features/schedule/data';
 import { refreshScheduleIntegrations } from '../features/schedule/services/scheduleService';
 
 // Import our offline schematic map modal and parser
 import { CampusMapModal, locateBuildingByRoom } from './CampusMapModal';
 
-const getTimeAgo = (dateInput: any) => {
-  if (!dateInput) return 'Just now';
-  const date = new Date(dateInput);
-  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-
-  if (seconds < 60) return 'Just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes === 1) return '1 min ago';
-  if (minutes < 60) return `${minutes} mins ago`;
-
-  const hours = Math.floor(minutes / 60);
-  if (hours === 1) return '1 hr ago';
-  if (hours < 24) return `${hours} hrs ago`;
-
-  const days = Math.floor(hours / 24);
-  if (days === 1) return '1 day ago';
-  return `${days} days ago`;
-};
-
-const ScheduleCardItemUI = ({ schedule, subjects }: { schedule: Schedule, subjects: Subject[] }) => {
-  const navigation = useNavigation<any>();
-  const subjectCount = subjects.length;
-
-  if (subjectCount === 0) {
-    return (
-      <View style={styles.emptyState}>
-        <MaterialIcon name="folder-open" size={32} color={palette.muted} />
-        <Text style={styles.emptyStateTitle}>Schedule is empty</Text>
-        <Text style={styles.emptyStateSub}>Add subjects via manual entry or scanner.</Text>
-      </View>
-    );
-  }
-
-  const targetDate = schedule.createdAt;
-
-  return (
-    <Pressable
-      style={({ pressed }: { pressed: boolean }) => [styles.card, pressed && styles.cardPressed]}
-      onPress={() => navigation.navigate('RecentSchedules')}
-    >
-      <View style={styles.cardIconBox}>
-        <MaterialIcon name="event-note" size={28} color={palette.secondary} />
-      </View>
-      <View style={styles.cardTextGroup}>
-        <Text style={styles.cardTitle}>{schedule.academicTerm} Schedule</Text>
-        <Text style={styles.cardSubtitle}>
-          {subjectCount} subject{subjectCount !== 1 ? 's' : ''} • Added {getTimeAgo(targetDate)}
-        </Text>
-      </View>
-    </Pressable>
-  );
-};
-
-const EnhancedScheduleCardItem = withObservables(['schedule'], ({ schedule }: { schedule: Schedule }) => ({
-  schedule: schedule.observe(),
-  subjects: schedule.subjects.observe(),
-}))(ScheduleCardItemUI);
-
-const RecentScheduleListUI = ({ schedules }: { schedules: Schedule[] }) => {
-  const latestSchedule = schedules[0];
-
-  if (!latestSchedule) {
-    return (
-      <View style={styles.emptyState}>
-        <MaterialIcon name="calendar-today" size={32} color={palette.muted} />
-        <Text style={styles.emptyStateTitle}>No schedules yet</Text>
-        <Text style={styles.emptyStateSub}>Tap '+' to create your first schedule.</Text>
-      </View>
-    );
-  }
-
-  return <EnhancedScheduleCardItem schedule={latestSchedule} />;
-};
-
-const RecentScheduleWrapper = withObservables([], () => ({
-  schedules: database.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).observe(),
-}))(RecentScheduleListUI);
-
-// ============================================================================
-// ARCHIVED SCHEDULES ENGINE
-// Skips the latest schedule (index 0) and maps the rest as past semesters
-// ============================================================================
-const ArchivedScheduleListUI = ({ schedules }: { schedules: Schedule[] }) => {
-  const archivedSchedules = schedules.slice(1);
-
-  if (archivedSchedules.length === 0) {
-    return (
-      <View style={styles.emptyState}>
-        <MaterialIcon name="archive" size={32} color={palette.muted} />
-        <Text style={styles.emptyStateTitle}>No archived records</Text>
-        <Text style={styles.emptyStateSub}>Past semesters will safely be stored here.</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={{ gap: 12 }}>
-      {archivedSchedules.map(schedule => (
-        <EnhancedScheduleCardItem key={schedule.id} schedule={schedule} />
-      ))}
-    </View>
-  );
-};
-
-const ArchivedSchedulesWrapper = withObservables([], () => ({
-  schedules: database.get<Schedule>('schedules').query(Q.sortBy('created_at', Q.desc)).observe(),
-}))(ArchivedScheduleListUI);
-
-
-export function HomeScreen({ navigation }: any) {
+export function HomeScreen({ navigation, route }: AppScreenProps<'Home'>) {
   const insets = useSafeAreaInsets();
-  const [activeFilter, setActiveFilter] = useState('Recent');
+  const [activeFilter, setActiveFilter] = useState<string>(route.params?.tab ?? 'Recent');
+  useEffect(() => {if (route.params?.tab) setActiveFilter(route.params.tab);}, [route.params?.tab, route.params?.gradeScheduleId]);
   const [isFabOpen, setIsFabOpen] = useState(false);
   const [userName, setUserName] = useState('');
   const didRunCleanupRef = useRef(false);
@@ -156,10 +47,14 @@ export function HomeScreen({ navigation }: any) {
     return () => sub.remove();
   }, [triggerToast]);
 
-  const filters = ['Recent', 'Schedules', 'Payments', 'Archived'];
+  const filters = ['Recent', 'Schedules', 'Grades', 'Payments', 'Archive'];
 
   const scrollY = useRef(new Animated.Value(0)).current;
-  const clampedScrollY = Animated.diffClamp(scrollY, 0, 100);
+  useEffect(() => {
+    scrollY.setValue(0);
+    setIsFabOpen(false);
+  }, [activeFilter, scrollY]);
+  const clampedScrollY = useMemo(() => Animated.diffClamp(scrollY, 0, 100), [scrollY]);
 
   const fabScrollTranslateY = clampedScrollY.interpolate({
     inputRange: [0, 100],
@@ -189,15 +84,19 @@ export function HomeScreen({ navigation }: any) {
   const item2TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [40, 0] });
   const item3TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [60, 0] });
   const item4TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [80, 0] });
+  const item5TranslateY = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [100, 0] });
   const itemScale = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1] });
 
   const fabRotate = fabAnimation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '45deg'] });
 
-  const handleOpenMap = (roomString?: string | null) => {
+  const handleOpenMap = useCallback((roomString?: string | null) => {
     const bId = locateBuildingByRoom(roomString);
     setTargetBuildingId(bId);
     setIsMapModalVisible(true);
-  };
+  }, []);
+  const openSchedule = useCallback((scheduleId: string) => navigation.navigate('RecentSchedules', {scheduleId}), [navigation]);
+  const openSubject = useCallback((editSubjectId: string) => navigation.navigate('ManualEntry', {editSubjectId}), [navigation]);
+  const calculateGrades = useCallback((scheduleId: string) => navigation.navigate('GradeCalculator', {scheduleId, autoCalculate: true}), [navigation]);
 
   useFocusEffect(
     useCallback(() => {
@@ -264,6 +163,8 @@ export function HomeScreen({ navigation }: any) {
           {filters.map((filter) => (
             <Pressable
               key={filter}
+              accessibilityRole="tab"
+              accessibilityState={{selected: activeFilter === filter}}
               style={({ pressed }: { pressed: boolean }) => [
                 styles.filterChip,
                 activeFilter === filter && styles.filterChipActive,
@@ -286,7 +187,10 @@ export function HomeScreen({ navigation }: any) {
       </View>
 
       <Animated.ScrollView
+        key={activeFilter}
+        testID="home-tab-content"
         style={styles.contentArea}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.contentPadding}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
@@ -295,11 +199,12 @@ export function HomeScreen({ navigation }: any) {
         scrollEventThrottle={16}
       >
         {/* TAB ROUTING ENGINE */}
-        {activeFilter === 'Recent' && <RecentScheduleWrapper />}
+        {activeFilter === 'Recent' && <RecentOverview onOpenSchedule={openSchedule} onOpenSubject={openSubject} />}
         {activeFilter === 'Schedules' && (
-          <ScheduleView onLocateRoom={(room: string) => handleOpenMap(room)} />
+          <ScheduleView onLocateRoom={handleOpenMap} />
         )}
-        {activeFilter === 'Archived' && <ArchivedSchedulesWrapper />}
+        {activeFilter === 'Grades' && <GradeBook initialScheduleId={route.params?.gradeScheduleId} onCalculate={calculateGrades} />}
+        {activeFilter === 'Archive' && <ArchiveOverview onOpenSchedule={openSchedule} />}
       </Animated.ScrollView>
 
       <Animated.View
@@ -310,6 +215,8 @@ export function HomeScreen({ navigation }: any) {
       </Animated.View>
 
       <Animated.View
+        testID="home-fab-layer"
+        pointerEvents="box-none"
         style={[
           styles.fabContainer,
           {
@@ -320,6 +227,12 @@ export function HomeScreen({ navigation }: any) {
         ]}
       >
         <View style={styles.fabMenuContainer} pointerEvents={isFabOpen ? 'auto' : 'none'}>
+          <Animated.View style={{opacity: fabAnimation, transform: [{translateY: item5TranslateY}, {scale: itemScale}]}}>
+            <TouchableOpacity style={styles.fabPill} activeOpacity={0.8} onPress={() => {setIsFabOpen(false); navigation.navigate('GradeCalculator');}}>
+              <MaterialIcon name="calculate" size={20} color={palette.primary} />
+              <Text style={styles.fabPillText}>GPA calculator</Text>
+            </TouchableOpacity>
+          </Animated.View>
 
           {/* ITEM 4: CAMPUS MAP DIRECTORY */}
           <Animated.View style={{ opacity: fabAnimation, transform: [{ translateY: item4TranslateY }, { scale: itemScale }] }}>
@@ -383,7 +296,7 @@ export function HomeScreen({ navigation }: any) {
 
         </View>
 
-        <TouchableWithoutFeedback onPress={() => setIsFabOpen(!isFabOpen)}>
+        <TouchableWithoutFeedback accessibilityRole="button" accessibilityLabel={isFabOpen ? 'Close menu' : 'Open menu'} accessibilityState={{expanded: isFabOpen}} onPress={() => setIsFabOpen(!isFabOpen)}>
           <Animated.View style={[styles.mainFab, { transform: [{ rotate: fabRotate }] }]}>
             <MaterialIcon name="add" size={32} color={palette.surface} />
           </Animated.View>
@@ -439,17 +352,8 @@ const styles = StyleSheet.create({
   contentArea: { flex: 1 },
   contentPadding: { paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: 160 },
 
-  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(28, 28, 30, 0.04)', padding: 16, borderRadius: 24 },
-  cardPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
-  cardIconBox: { width: 56, height: 56, borderRadius: 18, backgroundColor: 'rgba(197, 160, 89, 0.15)', justifyContent: 'center', alignItems: 'center', marginRight: spacing.lg },
-  cardTextGroup: { flex: 1, justifyContent: 'center' },
-  cardTitle: { fontSize: 18, fontWeight: '700', color: palette.ink, marginBottom: 4, letterSpacing: -0.2 },
-  cardSubtitle: { fontSize: 14, color: palette.muted, fontWeight: '500' },
   pressedState: { opacity: 0.7 },
 
-  emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48 },
-  emptyStateTitle: { fontSize: 16, fontWeight: '600', color: palette.muted, marginTop: 12, textAlign: 'center' },
-  emptyStateSub: { fontSize: 14, color: palette.muted, marginTop: 4, textAlign: 'center', opacity: 0.8 },
 
   dimOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(250, 246, 239, 0.92)', zIndex: 10 },
 

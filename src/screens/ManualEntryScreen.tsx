@@ -1,3 +1,4 @@
+import {ScreenModal as Modal} from '../shared/components/ScreenModal';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
@@ -11,8 +12,8 @@ import {
   Keyboard,
   LayoutAnimation,
   UIManager,
-  Modal,
   Animated,
+  ActivityIndicator,
   DeviceEventEmitter
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
@@ -22,9 +23,11 @@ import { palette, spacing } from '../tokens';
 import { useToast } from '../shared/hooks/useToast';
 import { scheduleRepository } from '../features/schedule/data';
 import { scheduleService } from '../features/schedule/services/scheduleService';
-import { getUnitLimit, normalizeSemester, ScheduleValidationError } from '../features/schedule/domain/rules';
-import { SubjectDraft } from '../features/schedule/domain/types';
-import { toTimeInput } from '../features/schedule/domain/time';
+import { getUnitLimit, normalizeSemester, ScheduleValidationError, getLogisticsError } from '../features/schedule/domain/rules';
+import { ParsedSubject } from '../features/scanner/domain/scanTypes';
+import { TimeField } from '../features/schedule/components/TimeField';
+import {UnitSelector} from '../features/schedule/components/UnitSelector';
+import { toTimeInput, parseClockField, inferEndPeriod, formatTimeEntry } from '../features/schedule/domain/time';
 import { AppScreenProps } from '../navigation/types';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -38,10 +41,10 @@ const DAYS_OF_WEEK = [
   { label: 'Th', value: 'Thu' },
   { label: 'F', value: 'Fri' },
   { label: 'S', value: 'Sat' },
+  { label: 'Su', value: 'Sun' },
 ];
 
 const TERMS = ['1st Sem', '2nd Sem', 'Summer'];
-const UNITS = [1, 2, 3, 4, 5, 6];
 
 export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualEntry'>) {
   const insets = useSafeAreaInsets();
@@ -52,7 +55,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
   const normalizedExtracted = rawExtractedSemester ? normalizeSemester(rawExtractedSemester) : '';
 
   const initialQueue = route?.params?.extractedSubjects || [];
-  const [reviewQueue, setReviewQueue] = useState<SubjectDraft[]>(initialQueue);
+  const [reviewQueue, setReviewQueue] = useState<ParsedSubject[]>(initialQueue);
   const totalScanned = useRef(initialQueue.length).current;
 
   const [isSaving, setIsSaving] = useState(false);
@@ -62,6 +65,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
   const [declaredTotalUnits, setDeclaredTotalUnits] = useState('');
 
   const [addedCount, setAddedCount] = useState(0);
+  const [hasSavedInSession, setHasSavedInSession] = useState(false);
   const [totalAddedUnits, setTotalAddedUnits] = useState(0);
 
   const [code, setCode] = useState('');
@@ -69,7 +73,12 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
   const [title, setTitle] = useState('');
   const [units, setUnits] = useState(3);
   const [originalUnits, setOriginalUnits] = useState(0);
-  const [isUnitsOpen, setIsUnitsOpen] = useState(false);
+  const [originalTerm, setOriginalTerm] = useState('');
+  const completedNumericEntry = useRef(false);
+  const userSelectedTerm = useRef(false);
+  const [isTermLoading, setIsTermLoading] = useState(true);
+  const [termLoadFailed, setTermLoadFailed] = useState(false);
+  const [termLoadAttempt, setTermLoadAttempt] = useState(0);
 
   const [room, setRoom] = useState('');
   const [instructor, setInstructor] = useState('');
@@ -79,6 +88,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
   const [startAmPm, setStartAmPm] = useState<'AM' | 'PM'>('AM');
   const [endTime, setEndTime] = useState('');
   const [endAmPm, setEndAmPm] = useState<'AM' | 'PM'>('AM');
+  const [endPeriodExplicit, setEndPeriodExplicit] = useState(false);
 
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
   const closeAlert = () => setCustomAlert(prev => ({ ...prev, visible: false }));
@@ -103,11 +113,13 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
       showLocalToast(`Maximum allowed for ${semester} is ${maxUnits} units`);
       cleaned = maxUnits.toString();
     }
+    if (cleaned.length === 2) completedNumericEntry.current = true;
     setDeclaredTotalUnits(cleaned);
   };
 
   const handleTermChange = (term: string) => {
     Keyboard.dismiss();
+    userSelectedTerm.current = true;
     if (term !== semester) {
       setSemester(term);
       const newMax = getUnitLimit(term);
@@ -120,21 +132,18 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
     }
   };
 
-  const declaredLimitNum = parseInt(declaredTotalUnits, 10);
+  const declaredLimitNum = Number(declaredTotalUnits);
+  const isDeclaredLimitValid = Number.isInteger(declaredLimitNum) && declaredLimitNum > 0 && declaredLimitNum <= maxUnits;
 
   const isDeclaredUnitLimitReached =
     reviewQueue.length === 0 &&
     !editSubjectId &&
-    !isNaN(declaredLimitNum) &&
+    isDeclaredLimitValid &&
     totalAddedUnits >= declaredLimitNum;
 
-  const isSystemOverload = editSubjectId
-    ? (totalAddedUnits - originalUnits + units) > maxUnits
-    : (totalAddedUnits + units) > maxUnits;
-
-  const isDeclaredOverload = !editSubjectId && !isNaN(declaredLimitNum)
-    ? (totalAddedUnits + units) > declaredLimitNum
-    : false;
+  const proposedUnits = totalAddedUnits + units - (editSubjectId && originalTerm === semester ? originalUnits : 0);
+  const isSystemOverload = proposedUnits > maxUnits;
+  const isDeclaredOverload = isDeclaredLimitValid && proposedUnits > declaredLimitNum;
 
   const hasUnitError = isSystemOverload || isDeclaredOverload;
 
@@ -152,17 +161,13 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
   }, []);
 
   useEffect(() => {
-    if (reviewQueue.length > 0 && normalizedExtracted) {
-      setSemester(normalizedExtracted);
-    }
-  }, [reviewQueue, normalizedExtracted]);
-
-  useEffect(() => {
+    let active = true;
     if (editSubjectId) {
       const loadSubject = async () => {
         try {
           const subject = await scheduleRepository.findSubject(editSubjectId);
           const sched = await subject.schedule.fetch();
+          if (!active) return;
 
           setSemester(sched.academicTerm);
           setAddedCount(1);
@@ -171,6 +176,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
           setTitle(subject.title);
           setUnits(subject.units);
           setOriginalUnits(subject.units);
+          setOriginalTerm(sched.academicTerm);
           setRoom(subject.room || '');
           setInstructor(subject.instructor || '');
           setSelectedDays(subject.days);
@@ -181,6 +187,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
           setStartAmPm(start.period);
           setEndTime(end.time);
           setEndAmPm(end.period);
+          setEndPeriodExplicit(true);
         } catch (e) {
           console.error("Failed to load subject", e);
         }
@@ -191,7 +198,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
       setCode(current.code || '');
       setSection(current.section || '');
       setTitle(current.title || '');
-      setUnits(current.units || 3);
+      setUnits(current.units);
       setRoom(current.room || '');
       setInstructor(current.instructor || '');
       setSelectedDays(current.days || []);
@@ -202,23 +209,30 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
       setStartAmPm(start.period);
       setEndTime(end.time);
       setEndAmPm(end.period);
+      setEndPeriodExplicit(!!current.endTime);
     }
+    return () => { active = false; };
   }, [editSubjectId, reviewQueue]);
 
   useEffect(() => {
     if (editSubjectId || reviewQueue.length > 0 || normalizedExtracted) return;
-
+    let active = true;
     const initRecentTerm = async () => {
-      const recent = await scheduleRepository.getLatestSchedule();
-      if (recent) {
-        setSemester(recent.academicTerm);
+      try {
+        const recent = await scheduleRepository.getLatestSchedule();
+        if (active && !userSelectedTerm.current && recent) setSemester(recent.academicTerm);
+      } catch (error) {
+        console.warn('Failed to load recent term', error);
       }
     };
     initRecentTerm();
+    return () => { active = false; };
   }, [editSubjectId, reviewQueue, normalizedExtracted]);
 
   useEffect(() => {
     let isMounted = true;
+    setIsTermLoading(true);
+    setTermLoadFailed(false);
     const loadTermData = async () => {
       try {
         const summary = await scheduleRepository.getTermSummary(semester);
@@ -228,12 +242,15 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
         setTotalAddedUnits(summary.totalUnits);
       } catch (error) {
         console.error('Failed to load term summary', error);
+        if (isMounted) setTermLoadFailed(true);
+      } finally {
+        if (isMounted) setIsTermLoading(false);
       }
     };
 
     loadTermData();
     return () => { isMounted = false; };
-  }, [semester, editSubjectId]);
+  }, [semester, editSubjectId, termLoadAttempt]);
 
   const toggleDay = (dayValue: string) => {
     Keyboard.dismiss();
@@ -244,48 +261,42 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
     }
   };
 
-  const toggleUnitsDropdown = () => {
-    Keyboard.dismiss();
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setIsUnitsOpen(!isUnitsOpen);
-  };
-
   const selectUnit = (unit: number) => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    Keyboard.dismiss();
     setUnits(unit);
-    setIsUnitsOpen(false);
   };
 
-  const formatTimeInput = (text: string) => {
-    let cleaned = text.replace(/[^0-9]/g, '');
-    if (cleaned.length >= 1) {
-      let hr = parseInt(cleaned.substring(0, 2), 10);
-      if (hr > 12) cleaned = '12' + cleaned.substring(2);
-      if (cleaned.length === 2 && hr === 0) cleaned = '12';
-    }
-    if (cleaned.length >= 3) {
-      let min = parseInt(cleaned.substring(2, 4), 10);
-      if (min > 59) cleaned = cleaned.substring(0, 2) + '59';
-    }
-    if (cleaned.length > 2) {
-      return cleaned.substring(0, 2) + ':' + cleaned.substring(2, 4);
-    }
-    return cleaned;
-  };
+  const effectiveEndPeriod = endPeriodExplicit ? endAmPm : inferEndPeriod(startTime, startAmPm, endTime);
+  const startEntry = parseClockField(startTime, startAmPm);
+  const endEntry = parseClockField(endTime, effectiveEndPeriod);
+  const isTBA = !startTime.trim() && !endTime.trim() && selectedDays.length === 0;
+  const logisticsError = (startTime.trim() && !startEntry.valid) || (endTime.trim() && !endEntry.valid)
+    ? 'Check the start and end times.'
+    : getLogisticsError(selectedDays, formatTimeEntry(startEntry), formatTimeEntry(endEntry));
+  const currentReview = reviewQueue[0]?.review;
+  const needsScanLogisticsReview = !!currentReview && !currentReview.explicitTBA && isTBA;
+  const isLogisticsValid = !logisticsError && !needsScanLogisticsReview;
+  const hasValidUnits = Number.isInteger(units) && units >= 1 && units <= 6;
 
-  const isTimeComplete = startTime.length === 5 && endTime.length === 5 && selectedDays.length > 0;
-  const isTBA = startTime.length === 0 && endTime.length === 0 && selectedDays.length === 0;
-  const isLogisticsValid = isTimeComplete || isTBA;
-
-  // NEW LOGIC: Form is strictly valid if target is reached.
-  // Otherwise, it checks for standard form completion rules.
-  const isFormValid = isDeclaredUnitLimitReached ? true : (
-    (editSubjectId || reviewQueue.length > 0 ? true : declaredTotalUnits.trim().length > 0) &&
+  const isUnitTargetValid = !!editSubjectId || isDeclaredLimitValid ||
+    (reviewQueue.length > 0 && !declaredTotalUnits);
+  // A reached target is a completion action; new subjects need a valid form.
+  const isFormValid = !isTermLoading && !termLoadFailed && (isDeclaredUnitLimitReached ? true : (
+    isUnitTargetValid &&
     code.trim().length > 0 &&
     title.trim().length > 0 &&
     isLogisticsValid &&
+    hasValidUnits &&
     !hasUnitError
-  );
+  ));
+
+  // Only a completed numeric entry can auto-close the keyboard. Loading a scan,
+  // reopening a valid field, or pausing halfway through a title must not close it.
+  useEffect(() => {
+    if (completedNumericEntry.current && isFormValid) Keyboard.dismiss();
+    completedNumericEntry.current = false;
+  }, [startTime, endTime, declaredTotalUnits, isFormValid]);
+  const onTimeComplete = () => { completedNumericEntry.current = true; };
 
   const newTotalAfterSave = totalAddedUnits + units;
   const canAddAnother =
@@ -313,8 +324,8 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
         subject: {
           code, section, title, units, room, instructor,
           days: selectedDays,
-          startTime: startTime ? `${startTime} ${startAmPm}` : '',
-          endTime: endTime ? `${endTime} ${endAmPm}` : '',
+          startTime: formatTimeEntry(startEntry),
+          endTime: formatTimeEntry(endEntry),
         },
       });
       const message = syncIssues.length
@@ -325,6 +336,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
         DeviceEventEmitter.emit('SHOW_TOAST', message);
         navigation.goBack();
       } else {
+        setHasSavedInSession(true);
         showLocalToast(message);
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         setAddedCount(prev => prev + 1);
@@ -342,7 +354,9 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
           setSelectedDays([]);
           setStartTime('');
           setEndTime('');
-          setIsUnitsOpen(false);
+          setStartAmPm('AM');
+          setEndAmPm('AM');
+          setEndPeriodExplicit(false);
         }
       }
     } catch (error) {
@@ -363,8 +377,8 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 20}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
     >
       <View style={styles.innerContainer}>
 
@@ -395,27 +409,35 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
         )}
 
         <ScrollView
+          pointerEvents={isSaving ? 'none' : 'auto'}
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           showsVerticalScrollIndicator={false}
         >
+          {termLoadFailed && (
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Retry loading units"
+              onPress={() => setTermLoadAttempt(attempt => attempt + 1)} style={styles.loadRetry}>
+              <Text style={styles.timeError}>Could not load units. Tap to retry.</Text>
+            </TouchableOpacity>
+          )}
 
           {/* Academic Term Section (Always Visible) */}
-          <View style={styles.section} pointerEvents={reviewQueue.length > 0 ? 'none' : 'auto'}>
+          <View style={styles.section}>
             <Text style={styles.sectionLabel}>Academic Term</Text>
 
             <View style={styles.termRow}>
               {TERMS.map((term) => {
                 const isSelected = semester === term;
-                const isReviewLocked = reviewQueue.length > 0;
-                const isDisabled = (addedCount > 0 && !isSelected) || (isReviewLocked && !isSelected);
+                const isDisabled = (!!editSubjectId || hasSavedInSession) && !isSelected;
 
                 return (
                   <TouchableOpacity
                     key={term}
                     activeOpacity={0.7}
-                    disabled={isDisabled || isReviewLocked}
+                    accessibilityRole="radio"
+                    accessibilityState={{checked: isSelected, disabled: isDisabled || isSaving}}
+                    disabled={isDisabled || isSaving}
                     onPress={() => handleTermChange(term)}
                     style={[ styles.termPill, isSelected && styles.termPillActive, isDisabled && styles.termPillDisabled ]}
                   >
@@ -427,16 +449,17 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
               })}
             </View>
 
-            {addedCount === 0 && !editSubjectId && reviewQueue.length === 0 && (
-              <View style={styles.totalSubjectsWrapper}>
-                <View>
-                  <Text style={styles.inputContextLabel}>Total Enrolled Units</Text>
-                  <Text style={styles.inputContextSub}>{maxUnits} max allowed</Text>
+            {!editSubjectId && (addedCount === 0 || reviewQueue.length > 0) && (
+              <View style={styles.enrolledUnitsCard}>
+                <View style={styles.unitLabelGroup}>
+                  <Text style={styles.inputContextLabel}>Enrolled units</Text>
+                  <Text style={styles.inputContextSub}>{reviewQueue.length > 0 ? `Optional · max ${maxUnits}` : `Maximum ${maxUnits}`}</Text>
                 </View>
-
+                <View style={styles.enrolledUnitsValue}>
                 <TextInput
                   style={styles.inputContext}
-                  placeholder="e.g. 18"
+                  accessibilityLabel="Enrolled units"
+                  placeholder="—"
                   placeholderTextColor={palette.muted}
                   value={declaredTotalUnits}
                   onChangeText={handleDeclaredUnitsChange}
@@ -444,7 +467,13 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
                   keyboardType="number-pad"
                   maxLength={2}
                   returnKeyType="done"
+                  editable={!isSaving && !isTermLoading}
                 />
+                <Text style={styles.unitSuffix}>units</Text>
+                </View>
+                {!!declaredTotalUnits && !isDeclaredLimitValid && (
+                  <Text style={[styles.timeError, styles.unitTargetError]} accessibilityLiveRegion="polite">Enter 1–{maxUnits} units.</Text>
+                )}
               </View>
             )}
           </View>
@@ -465,49 +494,20 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
               <View style={styles.section}>
                 <Text style={styles.sectionLabel}>Subject Details</Text>
 
-                <View style={styles.codeUnitRow}>
-                  <TextInput
-                    style={[styles.input, styles.flex2, { marginBottom: 0 }]}
-                    placeholder="Subject Code"
-                    placeholderTextColor={palette.muted}
-                    value={code}
-                    onChangeText={setCode}
-                    onSubmitEditing={() => titleRef.current?.focus()}
-                    autoCapitalize="characters"
-                    returnKeyType="next"
-                  />
-                  <View style={styles.spacer} />
-
-                  <TouchableOpacity style={[styles.unitDropdownToggle, hasUnitError && styles.unitDropdownError]} activeOpacity={0.7} onPress={toggleUnitsDropdown}>
-                    <Text style={[styles.unitDropdownText, hasUnitError && styles.textError]}>{units} Units</Text>
-                    <MaterialIcon name={isUnitsOpen ? "arrow-drop-up" : "arrow-drop-down"} size={24} color={hasUnitError ? '#d32f2f' : palette.ink} />
-                  </TouchableOpacity>
-                </View>
-
-                {hasUnitError && (
-                  <View style={styles.errorBanner}>
-                    <MaterialIcon name="error-outline" size={14} color="#d32f2f" />
-                    <Text style={styles.errorText}>
-                      {isSystemOverload
-                        ? `Exceeds ${maxUnits}-unit maximum for ${semester}.`
-                        : `Exceeds your declared target of ${declaredTotalUnits} units.`}
-                    </Text>
-                  </View>
-                )}
-
-                {isUnitsOpen && (
-                  <View style={styles.unitOptionsRow}>
-                    {UNITS.map(u => (
-                      <TouchableOpacity key={u} style={[styles.unitOptionPill, units === u && styles.unitOptionPillActive]} onPress={() => selectUnit(u)}>
-                        <Text style={[styles.unitOptionText, units === u && styles.unitOptionTextActive]}>{u}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
+                <TextInput
+                  style={styles.input}
+                  placeholder="Subject Code"
+                  placeholderTextColor={palette.muted}
+                  value={code}
+                  onChangeText={setCode}
+                  onSubmitEditing={() => titleRef.current?.focus()}
+                  autoCapitalize="characters"
+                  returnKeyType="next"
+                />
 
                 <TextInput
                   ref={sectionRef}
-                  style={[styles.input, { marginTop: spacing.md }]}
+                  style={styles.input}
                   placeholder="Section (e.g. Gg) (Optional)"
                   placeholderTextColor={palette.muted}
                   value={section}
@@ -525,9 +525,20 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
                   placeholderTextColor={palette.muted}
                   value={title}
                   onChangeText={setTitle}
-                  onSubmitEditing={() => roomRef.current?.focus()}
-                  returnKeyType="next"
+                  onSubmitEditing={() => isFormValid ? Keyboard.dismiss() : roomRef.current?.focus()}
+                  returnKeyType={isFormValid ? 'done' : 'next'}
                 />
+                <UnitSelector value={units} onChange={selectUnit} disabled={isSaving || isTermLoading} />
+                {hasUnitError && (
+                  <View style={styles.errorBanner}>
+                    <MaterialIcon name="error-outline" size={14} color="#d32f2f" />
+                    <Text style={styles.errorText} accessibilityLiveRegion="polite">
+                      {isSystemOverload
+                        ? `Exceeds ${maxUnits}-unit maximum for ${semester}.`
+                        : `Exceeds your declared target of ${declaredTotalUnits} units.`}
+                    </Text>
+                  </View>
+                )}
               </View>
 
               <View style={styles.section}>
@@ -560,7 +571,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
                   {DAYS_OF_WEEK.map((day) => {
                     const isSelected = selectedDays.includes(day.value);
                     return (
-                      <TouchableOpacity key={day.value} activeOpacity={0.7} onPress={() => toggleDay(day.value)} style={[styles.dayPill, isSelected && styles.dayPillActive]}>
+                      <TouchableOpacity key={day.value} accessibilityRole="checkbox" accessibilityLabel={`${day.value} class day`} accessibilityState={{checked: isSelected}} activeOpacity={0.7} onPress={() => toggleDay(day.value)} style={[styles.dayPill, isSelected && styles.dayPillActive]}>
                         <Text style={[styles.dayPillText, isSelected && styles.dayPillTextActive]}>{day.label}</Text>
                       </TouchableOpacity>
                     );
@@ -572,61 +583,19 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
                 <Text style={styles.sectionLabel}>Time (Optional for TBA)</Text>
 
                 <View style={styles.timeRow}>
-
-                  <View style={styles.timeContainer}>
-                    <Text style={styles.timeLabel}>Starts</Text>
-                    <View style={styles.timeInputWrapper}>
-                      <TextInput
-                        style={styles.timeValueInput}
-                        value={startTime}
-                        onChangeText={(text) => {
-                          const formatted = formatTimeInput(text);
-                          setStartTime(formatted);
-                          if (formatted.length === 5) endTimeRef.current?.focus();
-                        }}
-                        onSubmitEditing={() => endTimeRef.current?.focus()}
-                        placeholder="08:00"
-                        placeholderTextColor={palette.muted}
-                        keyboardType="number-pad"
-                        maxLength={5}
-                        returnKeyType="next"
-                      />
-                      <TouchableOpacity style={styles.amPmToggle} onPress={() => setStartAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
-                        <Text style={styles.amPmText}>{startAmPm}</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-
-                  <View style={styles.timeDivider}>
-                    <MaterialIcon name="arrow-forward" size={20} color={palette.muted} />
-                  </View>
-
-                  <View style={styles.timeContainer}>
-                    <Text style={styles.timeLabel}>Ends</Text>
-                    <View style={styles.timeInputWrapper}>
-                      <TextInput
-                        ref={endTimeRef}
-                        style={styles.timeValueInput}
-                        value={endTime}
-                        onChangeText={(text) => {
-                          const formatted = formatTimeInput(text);
-                          setEndTime(formatted);
-                          if (formatted.length === 5) Keyboard.dismiss();
-                        }}
-                        onSubmitEditing={() => Keyboard.dismiss()}
-                        placeholder="05:00"
-                        placeholderTextColor={palette.muted}
-                        keyboardType="number-pad"
-                        maxLength={5}
-                        returnKeyType="done"
-                      />
-                      <TouchableOpacity style={styles.amPmToggle} onPress={() => setEndAmPm(prev => prev === 'AM' ? 'PM' : 'AM')}>
-                        <Text style={styles.amPmText}>{endAmPm}</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-
+                  <TimeField label="Starts" value={startTime} period={startAmPm} onChange={setStartTime}
+                    onPeriodChange={setStartAmPm} disabled={isSaving} onComplete={onTimeComplete} onSubmit={() => endTimeRef.current?.focus()} />
+                  <View style={styles.timeDivider}><MaterialIcon name="arrow-forward" size={20} color={palette.muted} /></View>
+                  <TimeField ref={endTimeRef} label="Ends" value={endTime} period={effectiveEndPeriod} onChange={setEndTime}
+                    onPeriodChange={period => { setEndAmPm(period); setEndPeriodExplicit(true); }} disabled={isSaving} onComplete={onTimeComplete} />
                 </View>
+                {!!logisticsError && <Text style={styles.timeError} accessibilityLiveRegion="polite">{logisticsError}</Text>}
+                {needsScanLogisticsReview && <Text style={styles.timeError}>Confirm the scanned days and times.</Text>}
+                {!!currentReview?.notes.length && <Text style={styles.timeHint}>{currentReview.notes.join(' ')}</Text>}
+                {!!currentReview?.scheduleText && currentReview.fields.length > 0 && (
+                  <Text style={styles.scanSource} numberOfLines={4}>Scanned: {currentReview.scheduleText}</Text>
+                )}
+
               </View>
             </View>
           )}
@@ -667,6 +636,8 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
 
             <TouchableOpacity
               style={[styles.fabSave, !isFormValid && styles.fabSaveDisabled]}
+              accessibilityRole="button"
+              accessibilityState={{busy: isSaving, disabled: isSaving || !isFormValid}}
               activeOpacity={0.9}
               disabled={isSaving || !isFormValid}
               onPress={() => {
@@ -677,14 +648,14 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
                 }
               }}
             >
-              <MaterialIcon
+              {isSaving ? <ActivityIndicator color={palette.surface} style={styles.fabIcon} /> : <MaterialIcon
                 name={reviewQueue.length > 1 ? "arrow-forward" : "check"}
                 size={24}
                 color={isFormValid ? palette.surface : palette.muted}
                 style={styles.fabIcon}
-              />
+              />}
               <Text style={[styles.fabSaveText, !isFormValid && styles.textMuted]}>
-                {isDeclaredUnitLimitReached
+                {isSaving ? 'Saving…' : isDeclaredUnitLimitReached
                   ? 'Finish & Return Home'
                   : editSubjectId
                     ? 'Update Subject'
@@ -698,7 +669,7 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
           </View>
         )}
 
-        <Modal visible={customAlert.visible} transparent animationType="fade">
+        <Modal visible={customAlert.visible} transparent animationType="fade" onRequestClose={closeAlert}>
           <View style={styles.modalOverlay}>
             <View style={styles.dialogBox}>
               <Text style={styles.dialogTitle}>{customAlert.title}</Text>
@@ -719,6 +690,10 @@ export function ManualEntryScreen({ navigation, route }: AppScreenProps<'ManualE
 }
 
 const styles = StyleSheet.create({
+  timeHint: {fontSize: 11, color: palette.muted, lineHeight: 17},
+  timeError: {fontSize: 12, color: '#B3261E', lineHeight: 18, marginTop: 8},
+  scanSource: {fontSize: 11, color: palette.body, lineHeight: 17, marginTop: 8},
+  loadRetry: {minHeight: 44, justifyContent: 'center', marginBottom: 12},
   container: { flex: 1, backgroundColor: palette.bg },
   innerContainer: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
@@ -743,10 +718,14 @@ const styles = StyleSheet.create({
   termPillDisabled: { opacity: 0.35, backgroundColor: 'transparent', borderWidth: 1, borderColor: 'rgba(28,28,30,0.1)' },
   termTextDisabled: { color: palette.muted },
 
-  totalSubjectsWrapper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, paddingHorizontal: 20, paddingVertical: 12 },
+  enrolledUnitsCard: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between', backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, borderRadius: 18, padding: 16 },
+  unitLabelGroup: {flexGrow: 1},
+  enrolledUnitsValue: {flexDirection: 'row', alignItems: 'center', gap: 8},
+  unitSuffix: {fontSize: 13, color: palette.muted},
+  unitTargetError: {width: '100%', marginTop: 0},
   inputContextLabel: { fontSize: 15, fontWeight: '600', color: palette.ink },
   inputContextSub: { fontSize: 12, color: palette.muted, fontWeight: '500', marginTop: 2 },
-  inputContext: { fontSize: 16, fontWeight: '700', color: palette.ink, backgroundColor: 'rgba(255, 255, 255, 0.6)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, textAlign: 'center', minWidth: 60 },
+  inputContext: { fontSize: 22, fontWeight: '700', color: palette.primary, backgroundColor: palette.bg, borderWidth: 1, borderColor: palette.border, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, textAlign: 'center', minWidth: 64, minHeight: 48 },
 
   // NEW COMPLETION STATE STYLES
   completionStateContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: spacing.xxl, paddingHorizontal: spacing.lg, backgroundColor: 'rgba(197, 160, 89, 0.05)', borderRadius: 24, borderWidth: 1, borderColor: 'rgba(197, 160, 89, 0.2)', marginTop: spacing.md },
@@ -754,34 +733,16 @@ const styles = StyleSheet.create({
   completionTitle: { fontSize: 22, fontWeight: '800', color: palette.ink, marginBottom: spacing.sm, letterSpacing: -0.5 },
   completionSubtitle: { fontSize: 15, color: palette.body, textAlign: 'center', lineHeight: 22 },
 
-  codeUnitRow: { flexDirection: 'row', alignItems: 'center' },
-  flex2: { flex: 2 },
-  spacer: { width: spacing.md },
-  unitDropdownToggle: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(28, 28, 30, 0.04)', height: 56, borderRadius: 16, paddingHorizontal: 16 },
-  unitDropdownError: { borderWidth: 1, borderColor: '#d32f2f', backgroundColor: 'rgba(211, 47, 47, 0.05)' },
-  unitDropdownText: { fontSize: 15, fontWeight: '600', color: palette.ink },
-  textError: { color: '#d32f2f' },
   errorBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 8 },
   errorText: { color: '#d32f2f', fontSize: 12, fontWeight: '600', marginLeft: 4 },
-  unitOptionsRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, padding: 8, marginTop: spacing.sm },
-  unitOptionPill: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
-  unitOptionPillActive: { backgroundColor: palette.primary },
-  unitOptionText: { fontSize: 14, fontWeight: '600', color: palette.ink },
-  unitOptionTextActive: { color: palette.surface },
   input: { backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, paddingHorizontal: 20, height: 56, fontSize: 16, fontWeight: '500', color: palette.ink, marginBottom: spacing.md },
   daysRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  dayPill: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(28, 28, 30, 0.04)', justifyContent: 'center', alignItems: 'center' },
+  dayPill: { flex: 1, maxWidth: 44, marginHorizontal: 1, height: 40, borderRadius: 20, backgroundColor: 'rgba(28, 28, 30, 0.04)', justifyContent: 'center', alignItems: 'center' },
   dayPillActive: { backgroundColor: palette.primary },
   dayPillText: { fontSize: 15, fontWeight: '600', color: palette.ink },
   dayPillTextActive: { color: palette.surface },
 
   timeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  timeContainer: { flex: 1, backgroundColor: 'rgba(28, 28, 30, 0.04)', borderRadius: 16, paddingVertical: 12, paddingHorizontal: 10, alignItems: 'center' },
-  timeLabel: { fontSize: 12, color: palette.muted, fontWeight: '600', marginBottom: 4 },
-  timeInputWrapper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%', gap: 4 },
-  timeValueInput: { fontSize: 16, color: palette.ink, fontWeight: '700', textAlign: 'center', padding: 0, margin: 0, height: 36, minWidth: 54 },
-  amPmToggle: { backgroundColor: 'rgba(28, 28, 30, 0.08)', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8 },
-  amPmText: { fontSize: 13, fontWeight: '700', color: palette.primary },
   timeDivider: { justifyContent: 'center', alignItems: 'center', paddingHorizontal: 2 },
 
   bottomWrapper: { position: 'absolute', bottom: 0, width: '100%', alignItems: 'center', backgroundColor: palette.bg, paddingTop: 10 },
@@ -789,10 +750,10 @@ const styles = StyleSheet.create({
   addAnotherText: { color: palette.primary, fontSize: 15, fontWeight: '700', marginLeft: 4 },
   addAnotherDisabled: { opacity: 0.5 },
   textMuted: { color: palette.muted },
-  fabSave: { height: 64, borderRadius: 32, backgroundColor: palette.primary, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 48, shadowColor: palette.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 20, elevation: 6 },
+  fabSave: { minHeight: 64, maxWidth: '90%', borderRadius: 32, backgroundColor: palette.primary, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 28, paddingVertical: 14, shadowColor: palette.primary, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 20, elevation: 6 },
   fabSaveDisabled: { backgroundColor: 'rgba(28, 28, 30, 0.08)', shadowOpacity: 0, elevation: 0 },
   fabIcon: { marginRight: spacing.sm },
-  fabSaveText: { color: palette.surface, fontSize: 18, fontWeight: '700' },
+  fabSaveText: { color: palette.surface, fontSize: 18, fontWeight: '700', flexShrink: 1, textAlign: 'center' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: spacing.xl },
   dialogBox: { backgroundColor: palette.surface, borderRadius: 28, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 8 },

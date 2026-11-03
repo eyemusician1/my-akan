@@ -64,6 +64,27 @@ export function validateSubject(subject: SubjectDraft): void {
   }
 }
 
+export function getLogisticsError(
+  days: string[],
+  startTime: string,
+  endTime: string,
+): string | null {
+  if (!days.length && !startTime.trim() && !endTime.trim()) return null;
+  if (
+    days.some(
+      day => !['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].includes(day),
+    )
+  )
+    return 'Choose valid class days.';
+  if (!days.length || !startTime.trim() || !endTime.trim())
+    return 'Choose class days and complete both times.';
+  const start = parseTimeToMinutes(startTime);
+  const end = parseTimeToMinutes(endTime);
+  if (start === null || end === null) return 'Check the start and end times.';
+  if (start >= end) return 'The end time must be later than the start time.';
+  return null;
+}
+
 export function findTimeConflict<
   T extends Pick<SubjectDraft, 'days' | 'startTime' | 'endTime'>,
 >(subject: SubjectDraft, existingSubjects: T[]): T | undefined {

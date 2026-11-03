@@ -8,6 +8,7 @@ let screen: renderer.ReactTestRenderer;
 let value: Date;
 let onStateChange: (state: AppStateStatus) => void;
 const remove = jest.fn();
+const originalAppState = AppState.currentState;
 
 function Probe() {
   value = useFinanceDate();
@@ -15,6 +16,7 @@ function Probe() {
 }
 
 beforeEach(() => {
+  AppState.currentState = 'active';
   jest.useFakeTimers();
   jest.setSystemTime(new Date(2026, 10, 1, 23, 59, 59, 900));
   jest
@@ -31,6 +33,7 @@ afterEach(() => {
   renderer.act(() => screen.unmount());
   jest.restoreAllMocks();
   jest.useRealTimers();
+  AppState.currentState = originalAppState;
 });
 
 it('refreshes the date at midnight while the screen stays open', () => {
@@ -46,4 +49,16 @@ it('refreshes immediately when resuming the app on another day', () => {
   renderer.act(() => onStateChange('active'));
   expect(value.getMonth()).toBe(11);
   expect(value.getDate()).toBe(1);
+});
+
+it('stops the midnight timer in the background and restarts it on return', () => {
+  renderer.act(() => onStateChange('background'));
+  expect(jest.getTimerCount()).toBe(0);
+  renderer.act(() => jest.advanceTimersByTime(86400000));
+  expect(value.getDate()).toBe(1);
+  renderer.act(() => onStateChange('active'));
+  expect(value.getDate()).toBe(2);
+  expect(jest.getTimerCount()).toBe(1);
+  renderer.act(() => onStateChange('active'));
+  expect(jest.getTimerCount()).toBe(1);
 });

@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Trak\'n</string>
+    <string name="schedule_widget_name">Class schedule</string>
+    <string name="schedule_widget_description">Daily classes and quick add</string>
+    <string name="widget_today">Today</string>
+    <string name="widget_schedule_hint">Your classes at a glance</string>
 </resources>

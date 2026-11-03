@@ -1,3 +1,4 @@
+import {ScreenModal as Modal} from '../shared/components/ScreenModal';
 import React, {useState, useEffect, useRef, useMemo} from 'react';
 import {
   StyleSheet,
@@ -6,7 +7,6 @@ import {
   TouchableOpacity,
   ScrollView,
   TextInput,
-  Modal,
   KeyboardAvoidingView,
   Platform,
   Keyboard,
@@ -14,6 +14,7 @@ import {
   Animated,
   Switch,
   useWindowDimensions,
+  FlatList,
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -46,7 +47,13 @@ import {
   ExpenseCategory,
 } from '../features/finance/domain/types';
 import {useFinanceDate} from '../features/finance/hooks/useFinanceDate';
+import {BudgetNotifications} from '../core/notifications/BudgetNotifications';
 import {AppScreenProps} from '../navigation/types';
+import {
+  enterBottomSheet,
+  exitBottomSheet,
+  SHEET_CLOSED_OFFSET,
+} from '../shared/animations/bottomSheet';
 
 interface PaymentsScreenProps {
   navigation: AppScreenProps<'Finance'>['navigation'];
@@ -84,7 +91,9 @@ export const PaymentsScreenUI = ({
 
   // Animation Refs
   const modalOpacity = useRef(new Animated.Value(0)).current;
-  const modalTranslateY = useRef(new Animated.Value(600)).current;
+  const modalTranslateY = useRef(
+    new Animated.Value(SHEET_CLOSED_OFFSET),
+  ).current;
 
   // Input States
   const [expenseAmount, setExpenseAmount] = useState('');
@@ -126,39 +135,13 @@ export const PaymentsScreenUI = ({
     type: 'expense' | 'settings' | 'due' | 'duesInfo',
   ) => {
     setActiveModal(type);
-    modalOpacity.setValue(0);
-    modalTranslateY.setValue(600);
-
-    Animated.parallel([
-      Animated.timing(modalOpacity, {
-        toValue: 1,
-        duration: 250,
-        useNativeDriver: true,
-      }),
-      Animated.spring(modalTranslateY, {
-        toValue: 0,
-        tension: 65,
-        friction: 9,
-        useNativeDriver: true,
-      }),
-    ]).start();
+    enterBottomSheet(modalOpacity, modalTranslateY).start();
   };
 
   const closeAnimatedModal = () =>
     new Promise<void>(resolve => {
       Keyboard.dismiss();
-      Animated.parallel([
-        Animated.timing(modalOpacity, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(modalTranslateY, {
-          toValue: 600,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
+      exitBottomSheet(modalOpacity, modalTranslateY).start(() => {
         setActiveModal(null);
         resolve();
       });
@@ -168,6 +151,10 @@ export const PaymentsScreenUI = ({
     () => analyzeBudget(expenses, dues, budgetSettings, new Date()),
     [expenses, dues, budgetSettings, financeDate],
   );
+  useEffect(() => {
+    if (settingsLoaded) BudgetNotifications.check(analysis, budgetSettings)
+      .catch(error => console.warn('Budget alert could not update', error));
+  }, [analysis, budgetSettings, settingsLoaded]);
   const insight = getBudgetInsight(analysis, budgetSettings);
   const insightColors =
     insight.tone === 'danger'
@@ -292,10 +279,17 @@ export const PaymentsScreenUI = ({
         </View>
       </View>
 
-      <ScrollView
+      <FlatList
+        data={visibleExpenses}
+        keyExtractor={expense => expense.id}
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={5}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        scrollEnabled={!isDraggingDue}>
+        scrollEnabled={!isDraggingDue}
+        ListHeaderComponent={<>
         <BudgetCard
           settings={budgetSettings}
           analysis={analysis}
@@ -368,18 +362,22 @@ export const PaymentsScreenUI = ({
             </Text>
           </TouchableOpacity>
         </View>
-        <View style={styles.cardContainer}>
-          {visibleExpenses.length === 0 ? (
+        </>}
+        ListEmptyComponent={
+          <View style={styles.cardContainer}>
             <Text style={styles.emptyText}>
               {showAllActivity ? 'No expenses logged yet.' : 'No spending yet.'}
             </Text>
-          ) : (
-            visibleExpenses.map((tx, index) => (
+          </View>
+        }
+        renderItem={({item: tx, index}) => (
               <View
-                key={tx.id}
                 style={[
+                  styles.txCard,
                   styles.txRow,
                   index !== visibleExpenses.length - 1 && styles.borderBottom,
+                  index === 0 && styles.txCardFirst,
+                  index === visibleExpenses.length - 1 && styles.txCardLast,
                 ]}>
                 <View style={styles.txIconWrapper}>
                   <MaterialIcon
@@ -412,12 +410,9 @@ export const PaymentsScreenUI = ({
                   <MaterialIcon name="close" size={16} color={palette.border} />
                 </TouchableOpacity>
               </View>
-            ))
-          )}
-        </View>
-
-        <SpendingBreakdown analysis={analysis} />
-      </ScrollView>
+        )}
+        ListFooterComponent={<SpendingBreakdown analysis={analysis} />}
+      />
 
       {/* --- MASTER ANIMATED MODAL (Bypasses Android Shadow Smear) --- */}
       <Modal
@@ -816,6 +811,9 @@ const styles = StyleSheet.create({
   },
 
   txRow: {flexDirection: 'row', alignItems: 'center', paddingVertical: 16},
+  txCard: {backgroundColor: palette.surface, paddingHorizontal: spacing.lg},
+  txCardFirst: {borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingTop: 24},
+  txCardLast: {borderBottomLeftRadius: 28, borderBottomRightRadius: 28, paddingBottom: 24},
   txIconWrapper: {
     width: 40,
     height: 40,

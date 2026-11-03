@@ -1,46 +1,38 @@
 import React from 'react';
-import { Linking } from 'react-native';
-import { WidgetTaskHandlerProps } from 'react-native-android-widget';
-import { ScheduleWidget, WidgetSubject } from './ScheduleWidget';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {WidgetTaskHandlerProps} from 'react-native-android-widget';
+import {ScheduleWidget} from './ScheduleWidget';
+import {loadWidgetSchedule} from '../core/widgets/widgetSync';
+import {
+  parseWidgetSchedule,
+  WIDGET_CACHE_KEY,
+  WidgetSchedule,
+} from './scheduleData';
 
 export async function widgetTaskHandler({
   widgetAction,
-  clickAction,
+  widgetInfo,
   renderWidget,
 }: WidgetTaskHandlerProps) {
+  if (
+    !['WIDGET_ADDED', 'WIDGET_UPDATE', 'WIDGET_RESIZED'].includes(widgetAction)
+  )
+    return;
+  let schedule: WidgetSchedule | null = null;
   try {
-    switch (widgetAction) {
-      case 'WIDGET_ADDED':
-      case 'WIDGET_UPDATE':
-      case 'WIDGET_RESIZED':
-        let subjects: WidgetSubject[] = [];
-        try {
-          const cachedData = await AsyncStorage.getItem('@widget_schedule_cache');
-          if (cachedData) {
-            subjects = JSON.parse(cachedData);
-          }
-        } catch (parseError) {
-          console.warn('Widget cache parse error:', parseError);
-        }
-
-        const today = new Date();
-        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const dateHeader = `${today.getDate()} ${dayNames[today.getDay()]}`;
-
-        renderWidget(<ScheduleWidget dateHeader={dateHeader} subjects={subjects} />);
-        break;
-
-      case 'WIDGET_CLICK':
-        // Wake up the main application UI when the widget is tapped
-        if (clickAction === 'OPEN_APP' || clickAction === 'OPEN_APP_TO_ADD') {
-          Linking.openURL('trakn://home').catch(err =>
-            console.error('[Widget] Failed to open app:', err)
-          );
-        }
-        break;
-    }
+    schedule = parseWidgetSchedule(
+      await AsyncStorage.getItem(WIDGET_CACHE_KEY),
+    );
+    // First install / old daily caches recover from the existing saved schedule.
+    if (!schedule) schedule = await loadWidgetSchedule();
   } catch (error) {
-    console.error('[Widget] Error in widgetTaskHandler:', error);
+    console.warn('Widget schedule unavailable', error);
   }
+  renderWidget(
+    <ScheduleWidget
+      schedule={schedule ?? {version: 2, subjects: []}}
+      height={widgetInfo.height}
+      unavailable={!schedule}
+    />,
+  );
 }

@@ -6,6 +6,7 @@ import Schedule from '../src/core/database/models/Schedule';
 import Subject from '../src/core/database/models/Subject';
 import Expense from '../src/core/database/models/Expense';
 import Due from '../src/core/database/models/Due';
+import ScheduleActivity from '../src/core/database/models/ScheduleActivity';
 import {FinanceRepository} from '../src/features/finance/data/FinanceRepository';
 import {EXPENSE_CATEGORIES} from '../src/features/finance/domain/types';
 
@@ -19,7 +20,7 @@ beforeEach(() => {
       useIncrementalIndexedDB: true,
       extraLokiOptions: {autosave: false},
     }),
-    modelClasses: [Schedule, Subject, Expense, Due],
+    modelClasses: [Schedule, Subject, Expense, Due, ScheduleActivity],
   });
   repository = new FinanceRepository(database);
 });

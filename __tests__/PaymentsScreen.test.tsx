@@ -8,6 +8,7 @@ import {
   TextInput,
   TouchableOpacity,
   Switch,
+  FlatList,
 } from 'react-native';
 import renderer from 'react-test-renderer';
 import {PaymentsScreenUI} from '../src/screens/PaymentsScreen';
@@ -28,6 +29,7 @@ jest.mock(
   () => () => (Component: unknown) => Component,
 );
 jest.mock('../src/core/database', () => ({database: {}}));
+jest.mock('../src/core/notifications/BudgetNotifications', () => ({BudgetNotifications: {check: jest.fn(async () => {})}}));
 jest.mock('../src/features/finance/data', () => ({
   financeRepository: {
     addExpense: jest.fn(),
@@ -241,3 +243,32 @@ it('keeps older spending accessible without adding it to the current budget tota
     100,
   );
 });
+
+it('keeps a long expense history virtualized while preserving all records', async () => {
+  const expenses = Array.from(
+    {length: 200},
+    (_, index) =>
+      ({
+        id: `expense-${index}`,
+        title: `Expense ${index}`,
+        amount: 10,
+        category: 'food',
+        icon: 'lunch-dining',
+        createdAt: new Date(2026, 10, 2, 11),
+      } as Expense),
+  );
+  await renderScreen(expenses);
+  expect(screen.root.findByType(FlatList).props.data).toHaveLength(200);
+  const renderedExpenses = screen.root
+    .findAllByType(TouchableOpacity)
+    .filter(node =>
+      node.props.accessibilityLabel?.startsWith('Delete expense'),
+    );
+  expect(renderedExpenses.length).toBeGreaterThan(0);
+  expect(renderedExpenses.length).toBeLessThan(30);
+  expect(screen.root.findByType(BudgetCard).props.analysis.totalSpent).toBe(
+    2000,
+  );
+});
+
+jest.mock('@react-navigation/native', () => ({NavigationContext: require('react').createContext(undefined)}));

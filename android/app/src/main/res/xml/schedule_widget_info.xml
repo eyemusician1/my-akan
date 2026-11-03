@@ -5,7 +5,10 @@
     android:targetCellWidth="2"
     android:targetCellHeight="2"
     android:updatePeriodMillis="1800000"
-    android:previewImage="@mipmap/ic_launcher"
-    android:initialLayout="@layout/rn_widget"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="110dp"
+    android:description="@string/schedule_widget_description"
+    android:previewLayout="@layout/schedule_widget_initial"
+    android:initialLayout="@layout/schedule_widget_initial"
     android:resizeMode="horizontal|vertical"
     android:widgetCategory="home_screen" />

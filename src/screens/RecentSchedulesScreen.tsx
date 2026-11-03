@@ -1,3 +1,4 @@
+import {ScreenModal as Modal} from '../shared/components/ScreenModal';
 import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
@@ -6,7 +7,6 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
-  Modal,
   DeviceEventEmitter,
   Alert
 } from 'react-native';
@@ -20,6 +20,7 @@ import { database } from '../core/database';
 import Schedule from '../core/database/models/Schedule';
 import Subject from '../core/database/models/Subject';
 import { scheduleService } from '../features/schedule/services/scheduleService';
+import {AppScreenProps} from '../navigation/types';
 
 // 1. REACTIVE READ-ONLY ROSTER BODY
 const ScheduleRosterUI = ({ schedule, subjects, navigation }: { schedule: Schedule, subjects: Subject[], navigation: any }) => {
@@ -141,14 +142,15 @@ const ObservedScheduleRoster = withObservables(['schedule'], ({ schedule }: { sc
 
 
 // 2. MAIN SCREEN VIEW
-export function RecentSchedulesScreen({ navigation }: any) {
+export function RecentSchedulesScreen({ navigation, route }: AppScreenProps<'RecentSchedules'>) {
   const insets = useSafeAreaInsets();
   const [latestSchedule, setLatestSchedule] = useState<Schedule | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const scheduleId = route.params?.scheduleId;
 
   useEffect(() => {
     const subscription = database.get<Schedule>('schedules')
-      .query(Q.sortBy('created_at', Q.desc), Q.take(1))
+      .query(...(scheduleId ? [Q.where('id', scheduleId)] : [Q.sortBy('created_at', Q.desc), Q.take(1)]))
       .observe()
       .subscribe(schedules => {
         if (schedules.length > 0) {
@@ -160,7 +162,7 @@ export function RecentSchedulesScreen({ navigation }: any) {
       });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [scheduleId]);
 
   return (
     <View style={styles.container}>

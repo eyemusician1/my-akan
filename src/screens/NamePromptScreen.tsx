@@ -106,4 +106,4 @@ const styles = StyleSheet.create({
   buttonTextDisabled: { color: '#8E8E93' },
   buttonTextActive: { color: palette.surface },
   buttonPressed: { transform: [{ scale: 0.96 }], opacity: 0.9 },
-});
+})

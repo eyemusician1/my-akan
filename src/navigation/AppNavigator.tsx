@@ -15,6 +15,7 @@ import { ProfileScreen } from '../screens/ProfileScreen';
 import { ScannerScreen } from '../screens/ScannerScreen';
 import { RecentSchedulesScreen } from '../screens/RecentSchedulesScreen';
 import { PaymentsScreen } from '../screens/PaymentsScreen';
+import {GradeCalculatorScreen} from '../screens/GradeCalculatorScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -26,14 +27,15 @@ export function AppNavigator() {
   const fadeAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
+    let active = true;
     const prepareApp = async () => {
       try {
-        // Run the storage checks and a short splash delay simultaneously.
+        // Route as soon as storage is ready; retain the short native fade.
         const [storedName, storedYear] = await Promise.all([
           AsyncStorage.getItem('@user_name'),
           AsyncStorage.getItem('@user_year'), // <-- CHECK FOR YEAR TOO
-          new Promise(resolve => setTimeout(resolve, 1500))
         ]);
+        if (!active) return;
 
         // SMART ROUTING:
         if (storedName && storedYear) {
@@ -49,18 +51,20 @@ export function AppNavigator() {
           toValue: 0,
           duration: 400,
           useNativeDriver: true,
-        }).start(() => {
+        }).start(({finished}) => {
           // Completely unmount the splash screen after the animation finishes
-          setIsSplashVisible(false);
+          if (active && finished) setIsSplashVisible(false);
         });
 
       } catch (e) {
+        if (!active) return;
         setInitialRoute('Welcome');
         setIsSplashVisible(false);
       }
     };
 
     prepareApp();
+    return () => { active = false; fadeAnim.stopAnimation(); };
   }, [fadeAnim]);
 
   return (
@@ -113,6 +117,7 @@ export function AppNavigator() {
           <Stack.Screen name="Scanner" component={ScannerScreen} />
           <Stack.Screen name="RecentSchedules" component={RecentSchedulesScreen} />
           <Stack.Screen name="Finance" component={PaymentsScreen} />
+          <Stack.Screen name="GradeCalculator" component={GradeCalculatorScreen} />
 
         </Stack.Navigator>
       )}

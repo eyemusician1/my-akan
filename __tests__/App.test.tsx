@@ -15,13 +15,26 @@ import renderer from 'react-test-renderer';
 // This smoke test covers the app shell. Feature behavior is tested separately
 // without loading native camera, SQLite, notification or widget modules.
 jest.mock('@react-navigation/native', () => ({
-  NavigationContainer: ({children}: {children: React.ReactNode}) => children,
+  NavigationContainer: require('react').forwardRef(
+    ({children}: {children: React.ReactNode}, _ref: unknown) => children,
+  ),
 }));
 jest.mock('react-native-safe-area-context', () => ({
   SafeAreaProvider: ({children}: {children: React.ReactNode}) => children,
 }));
 jest.mock('../src/navigation/AppNavigator', () => ({
   AppNavigator: () => null,
+}));
+jest.mock('../src/core/notifications/useNotificationLifecycle', () => ({
+  useNotificationLifecycle: () => {},
+}));
+jest.mock('../src/core/notifications/notificationNavigation', () => ({
+  notificationNavigation: {},
+  flushNotificationOpen: async () => {},
+}));
+jest.mock('../src/core/widgets/widgetNavigation', () => ({
+  useWidgetNavigation: () => {},
+  flushWidgetOpen: () => {},
 }));
 
 it('renders correctly', () => {

@@ -6,6 +6,7 @@ import Schedule from '../src/core/database/models/Schedule';
 import Subject from '../src/core/database/models/Subject';
 import Expense from '../src/core/database/models/Expense';
 import Due from '../src/core/database/models/Due';
+import ScheduleActivity from '../src/core/database/models/ScheduleActivity';
 import {ScheduleRepository} from '../src/features/schedule/data/ScheduleRepository';
 import {SaveSubjectInput} from '../src/features/schedule/domain/types';
 
@@ -35,7 +36,7 @@ beforeEach(() => {
       useIncrementalIndexedDB: true,
       extraLokiOptions: {autosave: false},
     }),
-    modelClasses: [Schedule, Subject, Expense, Due],
+    modelClasses: [Schedule, Subject, Expense, Due, ScheduleActivity],
   });
   repository = new ScheduleRepository(database);
 });
@@ -132,4 +133,86 @@ it('propagates database failures so the UI cannot report a successful save', asy
     .mockRejectedValueOnce(new Error('Disk full'));
   await expect(repository.saveSubject(input)).rejects.toThrow('Disk full');
   batch.mockRestore();
+  expect(
+    await database
+      .get<ScheduleActivity>('schedule_activities')
+      .query()
+      .fetchCount(),
+  ).toBe(0);
+});
+
+it('persists an edit timestamp and its activity in the same mutation', async () => {
+  const subject = await repository.saveSubject(input);
+  const schedule = await subject.schedule.fetch();
+  const created = schedule.createdAt.getTime();
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(created + 120000);
+  try {
+    await repository.saveSubject({
+      ...input,
+      subjectId: subject.id,
+      subject: {...input.subject, room: '305'},
+    });
+    expect(schedule.updatedAt?.getTime()).toBe(created + 120000);
+    expect(schedule.createdAt.getTime()).toBe(created);
+    const history = await database
+      .get<ScheduleActivity>('schedule_activities')
+      .query()
+      .fetch();
+    expect(history.map(event => event.kind)).toEqual(['added', 'updated']);
+    expect(history[1]).toMatchObject({
+      label: 'CSC101 updated',
+      detail: 'Room',
+      subjectId: subject.id,
+    });
+    // A new repository instance reads the persisted modification date.
+    expect(
+      (
+        await new ScheduleRepository(database).getLatestSchedule()
+      )?.updatedAt?.getTime(),
+    ).toBe(created + 120000);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it('does not manufacture recent activity or a new timestamp for an unchanged save', async () => {
+  const subject = await repository.saveSubject(input);
+  const schedule = await subject.schedule.fetch();
+  const originalDate = schedule.updatedAt?.getTime();
+  await repository.saveSubject({...input, subjectId: subject.id});
+  expect(schedule.updatedAt?.getTime()).toBe(originalDate);
+  expect(
+    await database
+      .get<ScheduleActivity>('schedule_activities')
+      .query()
+      .fetchCount(),
+  ).toBe(1);
+});
+
+it('updates Recent when a subject is removed and retains the removal after the last subject', async () => {
+  const first = await repository.saveSubject(input);
+  const second = await repository.saveSubject({
+    ...input,
+    subject: {...input.subject, code: 'CSC102', days: ['Tue']},
+  });
+  const schedule = await first.schedule.fetch();
+  const updated = (schedule.updatedAt?.getTime() ?? 0) + 120000;
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(updated);
+  try {
+    await repository.deleteSubject(first.id);
+    expect(schedule.updatedAt?.getTime()).toBe(updated);
+    await repository.deleteSubject(second.id);
+    expect(await repository.getLatestSchedule()).toBeUndefined();
+    const history = await database
+      .get<ScheduleActivity>('schedule_activities')
+      .query()
+      .fetch();
+    expect(
+      history
+        .filter(event => event.kind === 'removed')
+        .map(event => event.label),
+    ).toEqual(['CSC101 removed', 'CSC102 removed']);
+  } finally {
+    clock.mockRestore();
+  }
 });

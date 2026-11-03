@@ -5,22 +5,34 @@ import {AppState} from 'react-native';
 export function useFinanceDate() {
   const [today, setToday] = useState(() => new Date());
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const clear = () => {
+      if (timer) clearTimeout(timer);
+    };
+    const refresh = () => {
+      clear();
+      if (AppState.currentState && AppState.currentState !== 'active') return;
+      const now = new Date();
+      setToday(now);
+      const nextMidnight = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + 1,
+      );
+      timer = setTimeout(
+        refresh,
+        Math.max(0, nextMidnight.getTime() - now.getTime()) + 100,
+      );
+    };
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active') setToday(new Date());
+      if (state === 'active') refresh();
+      else clear();
     });
-    return () => subscription.remove();
+    refresh();
+    return () => {
+      clear();
+      subscription.remove();
+    };
   }, []);
-  useEffect(() => {
-    const nextMidnight = new Date(
-      today.getFullYear(),
-      today.getMonth(),
-      today.getDate() + 1,
-    );
-    const timer = setTimeout(
-      () => setToday(new Date()),
-      Math.max(0, nextMidnight.getTime() - Date.now()) + 100,
-    );
-    return () => clearTimeout(timer);
-  }, [today]);
   return today;
 }

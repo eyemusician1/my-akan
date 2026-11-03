@@ -1,10 +1,10 @@
+import {ScreenModal as Modal} from '../shared/components/ScreenModal';
 import React from 'react';
 import {
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
-  Modal,
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';

@@ -25,6 +25,7 @@ export default class Subject extends Model {
   @field('section') section?: string;
   @field('title') title!: string;
   @field('units') units!: number;
+  @field('grade') grade!: number | null;
   @field('room') room?: string;
   @field('instructor') instructor?: string;
 

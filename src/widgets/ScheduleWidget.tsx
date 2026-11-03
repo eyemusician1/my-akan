@@ -1,143 +1,180 @@
 import React from 'react';
-import { FlexWidget, TextWidget, ColorProp } from 'react-native-android-widget';
+import {FlexWidget, ListWidget, TextWidget} from 'react-native-android-widget';
+import {palette} from '../tokens';
+import {
+  ADD_SCHEDULE_URI,
+  SCHEDULE_URI,
+  WidgetSchedule,
+  widgetAgenda,
+  widgetDateLabel,
+  widgetTimeLabel,
+} from './scheduleData';
 
-export interface WidgetSubject {
-  code: string;
-  room: string;
-  time: string;
-  color?: ColorProp;
-}
-
-export interface ScheduleWidgetProps {
-  dateHeader?: string;
-  subjects?: WidgetSubject[];
+interface Props {
+  schedule: WidgetSchedule;
+  now?: Date;
+  height?: number;
+  unavailable?: boolean;
 }
 
 export function ScheduleWidget({
-  dateHeader = 'Today',
-  subjects = [],
-}: ScheduleWidgetProps) {
+  schedule,
+  now = new Date(),
+  height = 180,
+  unavailable = false,
+}: Props) {
+  const agenda = widgetAgenda(schedule, now);
+  const listHeight = Math.max(40, height - 64);
   return (
     <FlexWidget
       style={{
-        height: 'match_parent',
         width: 'match_parent',
-        backgroundColor: '#121212', // Trakn Deep Background
+        height: 'match_parent',
+        backgroundColor: palette.bg,
         borderRadius: 24,
-        paddingHorizontal: 18,
-        paddingVertical: 16,
-        flexDirection: 'column',
-      }}
-    >
-      {/* Header Row: Date + Quick Add FAB */}
+        padding: 10,
+      }}>
       <FlexWidget
         style={{
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          alignItems: 'center',
           width: 'match_parent',
-          marginBottom: 14,
-        }}
-      >
-        <TextWidget
-          text={dateHeader}
-          style={{
-            fontSize: 20,
-            fontWeight: 'bold',
-            color: '#FFFFFF',
-            letterSpacing: -0.3,
-          }}
-        />
-
-        {/* Trakn Gold FAB */}
+          height: 44,
+          flexDirection: 'row',
+          alignItems: 'center',
+        }}>
         <FlexWidget
-          clickAction="OPEN_APP_TO_ADD"
-          style={{
-            width: 38,
-            height: 38,
-            borderRadius: 19,
-            backgroundColor: '#C5A059', // Trakn Warm Gold
-            justifyContent: 'center',
-            alignItems: 'center',
-          }}
-        >
+          clickAction="OPEN_URI"
+          clickActionData={{uri: SCHEDULE_URI}}
+          accessibilityLabel={`${widgetDateLabel(now)}. View schedule`}
+          style={{flex: 1, height: 44, justifyContent: 'center'}}>
           <TextWidget
-            text="+"
+            text={widgetDateLabel(now)}
+            maxLines={1}
+            truncate="END"
             style={{
-              fontSize: 24,
+              fontSize: 13,
               fontWeight: 'bold',
-              color: '#121212', // Dark Ink Text
+              color: palette.ink,
             }}
           />
+        </FlexWidget>
+        <FlexWidget
+          clickAction="OPEN_URI"
+          clickActionData={{uri: ADD_SCHEDULE_URI}}
+          accessibilityLabel="Add subject"
+          style={{
+            width: 44,
+            height: 44,
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}>
+          <FlexWidget
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 17,
+              backgroundColor: palette.primary,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+            <TextWidget
+              text="+"
+              allowFontScaling={false}
+              style={{fontSize: 25, color: palette.bg, textAlign: 'center'}}
+            />
+          </FlexWidget>
         </FlexWidget>
       </FlexWidget>
-
-      {/* Content Area */}
-      {subjects.length === 0 ? (
-        <FlexWidget
-          clickAction="OPEN_APP"
-          style={{
-            flex: 1,
-            width: 'match_parent',
-            backgroundColor: '#1C1C1E', // Tonal Card Background
-            borderRadius: 18,
-            justifyContent: 'center',
-            alignItems: 'center',
-            padding: 16,
-          }}
-        >
-          <TextWidget
-            text="Nothing planned"
-            style={{
-              fontSize: 16,
-              fontWeight: '500',
-              color: '#A0A2A8',
-              textAlign: 'center',
-            }}
-          />
-        </FlexWidget>
-      ) : (
-        <FlexWidget
-          style={{
-            flexDirection: 'column',
-            width: 'match_parent',
-          }}
-        >
-          {subjects.slice(0, 3).map((subj, index) => (
-            <FlexWidget
-              key={index}
-              clickAction="OPEN_APP"
-              style={{
-                width: 'match_parent',
-                backgroundColor: '#1C1C1E',
-                borderRadius: 14,
-                paddingVertical: 10,
-                paddingHorizontal: 14,
-                marginBottom: index < Math.min(subjects.length, 3) - 1 ? 8 : 0,
-                borderLeftWidth: 4,
-                borderLeftColor: (subj.color || '#C5A059') as ColorProp,
-              }}
-            >
-              <TextWidget
-                text={subj.code}
-                style={{
-                  fontSize: 15,
-                  fontWeight: 'bold',
-                  color: '#FFFBFE',
-                }}
-              />
-              <TextWidget
-                text={`${subj.time} • ${subj.room || 'TBA'}`}
-                style={{
-                  fontSize: 13,
-                  color: '#A0A2A8',
-                  marginTop: 2,
-                }}
-              />
-            </FlexWidget>
-          ))}
-        </FlexWidget>
-      )}
+      <ListWidget style={{width: 'match_parent', height: listHeight}}>
+        {agenda.flatMap((day, dayIndex) => [
+          ...(dayIndex
+            ? [
+                <TextWidget
+                  key={`${day.key}-date`}
+                  text={day.label}
+                  clickAction="OPEN_URI"
+                  clickActionData={{uri: SCHEDULE_URI}}
+                  accessibilityLabel={`${day.label}. View schedule`}
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 'bold',
+                    color: palette.body,
+                    paddingTop: 10,
+                    paddingBottom: 6,
+                    paddingLeft: 3,
+                  }}
+                />,
+              ]
+            : []),
+          ...(day.subjects.length
+            ? day.subjects.map((subject, index) => (
+                <FlexWidget
+                  key={`${day.key}-${subject.id}`}
+                  clickAction="OPEN_URI"
+                  clickActionData={{uri: SCHEDULE_URI}}
+                  accessibilityLabel={`${day.label}. ${subject.code}, ${
+                    subject.title
+                  }. ${widgetTimeLabel(subject)}${
+                    subject.room ? `, ${subject.room}` : ''
+                  }. View schedule`}
+                  style={{
+                    width: 'match_parent',
+                    paddingBottom: 4,
+                  }}>
+                  <FlexWidget
+                    style={{
+                      width: 'match_parent',
+                      borderRadius: 12,
+                      backgroundColor: index % 2 ? '#eee2cf' : '#ecdada',
+                      paddingHorizontal: 9,
+                      paddingVertical: 7,
+                    }}>
+                    <TextWidget
+                      text={subject.code || subject.title}
+                      maxLines={1}
+                      truncate="END"
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 'bold',
+                        color: palette.primary,
+                      }}
+                    />
+                    <TextWidget
+                      text={`${widgetTimeLabel(subject)}${
+                        subject.room ? ` · ${subject.room}` : ''
+                      }`}
+                      maxLines={1}
+                      truncate="END"
+                      style={{fontSize: 11, color: palette.body, marginTop: 2}}
+                    />
+                  </FlexWidget>
+                </FlexWidget>
+              ))
+            : [
+                <FlexWidget
+                  key={`${day.key}-empty`}
+                  clickAction="OPEN_URI"
+                  clickActionData={{uri: SCHEDULE_URI}}
+                  accessibilityLabel={
+                    unavailable
+                      ? 'Open Trakn to refresh schedule'
+                      : 'No classes today. View schedule'
+                  }
+                  style={{
+                    width: 'match_parent',
+                    backgroundColor: palette.surface,
+                    borderRadius: 12,
+                    padding: 12,
+                  }}>
+                  <TextWidget
+                    text={
+                      unavailable ? 'Open Trakn to refresh' : 'No classes today'
+                    }
+                    style={{fontSize: 13, color: palette.body}}
+                  />
+                </FlexWidget>,
+              ]),
+        ])}
+      </ListWidget>
     </FlexWidget>
   );
 }

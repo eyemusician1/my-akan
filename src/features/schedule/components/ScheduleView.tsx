@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import {ScreenModal as Modal} from '../../../shared/components/ScreenModal';
+import React, { memo, useState, useMemo, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
   Platform,
-  Modal,
   DeviceEventEmitter,
   ScrollView,
   Animated,
@@ -13,21 +13,26 @@ import {
 } from 'react-native';
 import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import withObservables from '@nozbe/with-observables';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
+import {Q} from '@nozbe/watermelondb';
+import {of} from 'rxjs';
+import {switchMap} from 'rxjs/operators';
 
 import { palette, spacing } from '../../../tokens';
 import { database } from '../../../core/database';
 import { scheduleService } from '../services/scheduleService';
 import { timeToDecimal } from '../domain/time';
 import Subject from '../../../core/database/models/Subject';
+import Schedule from '../../../core/database/models/Schedule';
+import {useVisibleNow} from '../../../shared/hooks/useVisibleNow';
 
 const HOUR_HEIGHT = 60;
 const START_HOUR = 7;
 const HOURS = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
-const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const getDayLabel = (days: string[]) => {
-  const map: Record<string, string> = { Mon: 'M', Tue: 'T', Wed: 'W', Thu: 'TH', Fri: 'F', Sat: 'S' };
+  const map: Record<string, string> = { Mon: 'M', Tue: 'T', Wed: 'W', Thu: 'TH', Fri: 'F', Sat: 'S', Sun: 'Su' };
   return days.map(d => map[d] || d).join('');
 };
 
@@ -80,7 +85,7 @@ const EventCard = ({ item, onOptions }: { item: any, onOptions: () => void }) =>
   );
 };
 
-const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLocateRoom?: (room: string) => void }) => {
+export const ScheduleViewUI = memo(({ subjects, onLocateRoom }: { subjects: Subject[], onLocateRoom?: (room: string) => void }) => {
   const navigation = useNavigation<any>();
   const [viewMode, setViewMode] = useState<'agenda' | 'week'>('agenda');
 
@@ -94,7 +99,7 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
   const [isDeleting, setIsDeleting] = useState(false);
   const deleteInProgress = useRef(false);
 
-  const [tick, setTick] = useState(0);
+  const today = useVisibleNow();
   const prevSubjectsRef = useRef<any[] | null>(null);
 
   useEffect(() => {
@@ -139,26 +144,18 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
     }));
   }, [subjects]);
 
-  useFocusEffect(
-    useCallback(() => {
-      setTick(t => t + 1);
-    }, [])
-  );
-
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const dayNamesFull = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const today = new Date();
 
   const currentDayName = dayNamesFull[today.getDay()];
   const currentDateString = `${currentDayName}, ${monthNames[today.getMonth()]} ${today.getDate()}`;
 
-  const activeDay = DAYS.includes(currentDayName) ? currentDayName : 'Mon';
-  const isSunday = currentDayName === 'Sun';
+  const activeDay = currentDayName;
 
   const themeColors = [palette.primary, palette.body, palette.ink];
   const bgTints = ['rgba(122, 28, 28, 0.08)', 'rgba(197, 160, 89, 0.15)', 'rgba(28, 28, 30, 0.06)'];
 
-  const liveSchedule = subjects.map((subj, index) => {
+  const liveSchedule = useMemo(() => subjects.map((subj, index) => {
     const cIdx = index % themeColors.length;
     return {
       id: subj.id,
@@ -177,7 +174,7 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
       themeColor: themeColors[cIdx],
       bgTint: bgTints[cIdx]
     };
-  });
+  }), [subjects]);
 
   const agendaItems = liveSchedule
     .filter(item => item.days.includes(activeDay))
@@ -250,20 +247,6 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
   };
 
   const renderAgenda = () => {
-    if (isSunday) {
-      return (
-        <View style={styles.sundayCard}>
-          <View style={styles.sundayIconPill}>
-            <MaterialIcon name="weekend" size={28} color={palette.primary} />
-          </View>
-          <Text style={styles.sundayTitle}>It's Sunday! ☕</Text>
-          <Text style={styles.sundayMessage}>
-            No scheduled classes today. Put your phone away, get some rest, and recharge for the week ahead.
-          </Text>
-        </View>
-      );
-    }
-
     if (agendaItems.length === 0) {
       return (
         <View style={styles.emptyState}>
@@ -402,12 +385,16 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
 
         <View style={styles.toggleWrapper}>
           <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Agenda view"
             style={[styles.toggleButton, viewMode === 'agenda' && styles.toggleButtonActive]}
             onPress={() => setViewMode('agenda')}
           >
             <MaterialIcon name="view-agenda" size={18} color={viewMode === 'agenda' ? palette.ink : palette.muted} />
           </TouchableOpacity>
           <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Week view"
             style={[styles.toggleButton, viewMode === 'week' && styles.toggleButtonActive]}
             onPress={() => setViewMode('week')}
           >
@@ -483,12 +470,15 @@ const ScheduleViewUI = ({ subjects, onLocateRoom }: { subjects: Subject[], onLoc
 
     </View>
   );
-};
+});
 
 export const ScheduleView = withObservables([], () => ({
-  subjects: database.collections.get<Subject>('subjects')
-    .query()
-    .observeWithColumns(['start_time', 'end_time', 'code', 'section', 'title', 'room', 'instructor', 'days']),
+  subjects: database.get<Schedule>('schedules')
+    .query(Q.sortBy('created_at', Q.desc), Q.take(1)).observe().pipe(
+      switchMap(schedules => schedules[0]
+        ? schedules[0].subjects.observeWithColumns(['start_time', 'end_time', 'code', 'section', 'title', 'room', 'instructor', 'days'])
+        : of([] as Subject[])),
+    ),
 }))(ScheduleViewUI);
 
 const styles = StyleSheet.create({
@@ -499,10 +489,6 @@ const styles = StyleSheet.create({
   toggleButton: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
   toggleButtonActive: { backgroundColor: palette.surface, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
 
-  sundayCard: { backgroundColor: 'rgba(122, 28, 28, 0.05)', padding: 28, borderRadius: 28, alignItems: 'center', marginTop: 10, borderWidth: 1, borderColor: 'rgba(122, 28, 28, 0.08)' },
-  sundayIconPill: { width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(122, 28, 28, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
-  sundayTitle: { fontSize: 22, fontWeight: '700', color: palette.ink, marginBottom: 8 },
-  sundayMessage: { fontSize: 14, color: palette.body, textAlign: 'center', lineHeight: 22, paddingHorizontal: 10 },
 
   eventsContainer: { paddingBottom: 16 },
   agendaItemWrapper: { marginBottom: 10 },

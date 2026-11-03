@@ -1,14 +1,19 @@
-import {SubjectDraft} from '../../schedule/domain/types';
+import {identifyColumn, readTable, TableRecord} from './ocrLayout';
+import {
+  extractTimeRanges,
+  parseScheduleDays,
+  stripScheduleText,
+} from './scheduleText';
+import type {
+  OcrDocument,
+  ParsedSubject,
+  ParseResult,
+  ScanReview,
+} from './scanTypes';
+export type {ParsedSubject, ParseResult} from './scanTypes';
 
-export type ParsedSubject = SubjectDraft;
-
-export type ParseResult = {
-  detectedSemester: string | null;
-  academicTerm: string | null;
-  subjects: ParsedSubject[];
-};
-
-const NON_CODE_PREFIXES = new Set([
+const CODE = /^([A-Z]{2,8})[\s-]*(\d{1,4}(?:\.\d{1,2})?[A-Z]?)(?=\s|$|[|])/i;
+const EXCLUDED_CODES = new Set([
   'MON',
   'TUE',
   'WED',
@@ -18,141 +23,431 @@ const NON_CODE_PREFIXES = new Set([
   'SUN',
   'MWF',
   'TTH',
-  'MTH',
-  'MWS',
-  'MFS',
-  'MF',
-  'MW',
-  'TF',
-  'WF',
-  'FS',
   'TBA',
-  'AND',
-  'FOR',
-  'THE',
   'SEM',
-  'NOT',
-  'AM',
-  'PM',
-  'SUM',
+  'ROOM',
+  'YEAR',
+  'TOTAL',
+  'UNITS',
+  'SECTION',
 ]);
+const UNIT = /^(?:[1-6](?:\.0)?)$/;
+const INSTRUCTOR =
+  /(?:Prof\.?|Dr\.?|Mr\.?|Ms\.?|Mrs\.?|Engr\.?|Atty\.?|Inst\.?)\s+[A-Za-z][A-Za-z.,-]*(?:\s+[A-Za-z][A-Za-z.,-]*){0,4}/i;
 
-const ROOM_EXCLUDES = new Set([
-  ...Array.from(NON_CODE_PREFIXES),
-  'TH',
-  'TU',
-  'MO',
-  'WE',
-  'FR',
-  'SA',
-  'SU',
-  'TBA',
-  'NONE',
-  'MTWTHF',
-  'SUM',
-]);
-
-const DAY_COMPOUNDS: [string, string[]][] = [
-  ['MTWTHF', ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']],
-  ['MTTHF', ['Mon', 'Tue', 'Thu', 'Fri']],
-  ['MWTHF', ['Mon', 'Wed', 'Thu', 'Fri']],
-  ['MWTH', ['Mon', 'Wed', 'Thu']],
-  ['TWTH', ['Tue', 'Wed', 'Thu']],
-  ['MWF', ['Mon', 'Wed', 'Fri']],
-  ['MTH', ['Mon', 'Thu']],
-  ['TTH', ['Tue', 'Thu']],
-  ['MWS', ['Mon', 'Wed', 'Sat']],
-  ['MFS', ['Mon', 'Fri', 'Sat']],
-  ['FS', ['Fri', 'Sat']],
-  ['MF', ['Mon', 'Fri']],
-  ['MW', ['Mon', 'Wed']],
-  ['TF', ['Tue', 'Fri']],
-  ['WF', ['Wed', 'Fri']],
-];
-
-function parseDays(raw: string): string[] {
-  const d = raw.toUpperCase().replace(/\s+/g, '').trim();
-  for (const [pat, result] of DAY_COMPOUNDS) if (d === pat) return result;
-  for (const [pat, result] of DAY_COMPOUNDS)
-    if (d.startsWith(pat)) return result;
-  const out: string[] = [];
-  let i = 0;
-  while (i < d.length) {
-    if (d.slice(i, i + 2) === 'TH') {
-      out.push('Thu');
-      i += 2;
-      continue;
-    }
-    if (d[i] === 'M') {
-      out.push('Mon');
-      i++;
-      continue;
-    }
-    if (d[i] === 'T') {
-      out.push('Tue');
-      i++;
-      continue;
-    }
-    if (d[i] === 'W') {
-      out.push('Wed');
-      i++;
-      continue;
-    }
-    if (d[i] === 'F') {
-      out.push('Fri');
-      i++;
-      continue;
-    }
-    if (d[i] === 'S') {
-      out.push('Sat');
-      i++;
-      continue;
-    }
-    i++;
+function normalizeText(text: string) {
+  return text
+    .replace(/\r/g, '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[–—]/g, '-')
+    .replace(/\b([A-Z]{2,8}\s*\d)O(\d)\b/g, '$10$2');
+}
+function normalizeCode(value: string) {
+  const match = value.trim().match(CODE);
+  return match && !EXCLUDED_CODES.has(match[1].toUpperCase())
+    ? `${match[1]}${match[2]}`.toUpperCase()
+    : '';
+}
+/** Class/section identifiers are distinct from numeric course identifiers. */
+function isClassCode(value: string) {
+  return (
+    /^\*?(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{2,8}$/.test(value) &&
+    !/^(?:IT|AI|SQL|ROTC|CWTS|NSTP|TBA)$/i.test(value)
+  );
+}
+function cleanTitle(value: string, code: string, section: string) {
+  let title = value.replace(/\s+/g, ' ').trim();
+  // Remove a duplicated course or known section only at the start of the cell.
+  for (const identifier of [code, section]) {
+    if (!identifier) continue;
+    const first = title.split(/\s+/)[0];
+    if (first.toUpperCase() === identifier.toUpperCase())
+      title = title.slice(first.length).trim();
   }
-  return [...new Set(out)];
+  if (!/\s/.test(title) && normalizeCode(title) === title.toUpperCase())
+    return '';
+  if (isClassCode(title) && /\d/.test(title)) return '';
+  if (/^(?:[A-Z][a-z]){2,}\d?$/.test(title) || /^TBA$/i.test(title)) return '';
+  return /[A-Za-z]{3}/.test(title) ? title : '';
+}
+function isDaysOnly(value: string) {
+  return (
+    parseScheduleDays(value).length > 0 &&
+    !stripScheduleText(value).replace(/[\s.,/\-]/g, '')
+  );
+}
+function isRoom(value: string) {
+  return (
+    !isDaysOnly(value) &&
+    !/^(?:TBA|AM|PM|NONE)$/i.test(value) &&
+    /^(?:\d{3,4}|[A-Z]{1,8}[- ]?\d{1,4}|[A-Z]{1,6}LAB)$/i.test(value)
+  );
+}
+function readTerm(text: string) {
+  const semester = text.match(
+    /\b(first|1st|second|2nd)\s+sem(?:ester)?\b|\b(summer)\b/i,
+  );
+  const detectedSemester = semester
+    ? semester[2]
+      ? 'Summer'
+      : /^(?:first|1st)$/i.test(semester[1])
+      ? '1st Sem'
+      : '2nd Sem'
+    : null;
+  const year = text.match(
+    /\b(?:A\.?Y\.?|S\.?Y\.?|Acad\.?\s+Year|Academic\s+Year)\s*[:\-]?\s*(\d{4})\s*-\s*(\d{4}|\d{2})\b/i,
+  );
+  const suffix = year
+    ? `, ${year[1]}-${
+        year[2].length === 2 ? year[1].slice(0, 2) + year[2] : year[2]
+      }`
+    : '';
+  return {
+    detectedSemester,
+    academicTerm: detectedSemester ? detectedSemester + suffix : null,
+  };
 }
 
-function normalizeTime(raw: string, ampmHint: string): string {
-  let s = raw.trim();
-  if (!s.includes(':')) {
-    s = `${s}:00`;
+function delimitedTable(lines: string[]): TableRecord[] {
+  const split = (line: string) =>
+    line
+      .replace(/^\s*\||\|\s*$/g, '')
+      .split(/\s*\|\s*|\t+| {2,}/)
+      .map(cell => cell.trim());
+  const headerIndex = lines.findIndex(line => {
+    const names = split(line).map(identifyColumn);
+    return (
+      names.includes('code') &&
+      names.includes('title') &&
+      names.filter(Boolean).length >= 3
+    );
+  });
+  if (headerIndex < 0) return [];
+  const names = split(lines[headerIndex]).map(identifyColumn);
+  const result: TableRecord[] = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    const cells = split(line);
+    if (cells.length < 3) continue;
+    const fields: TableRecord['fields'] = {};
+    cells.forEach((cell, index) => {
+      const name = names[index];
+      if (name) fields[name] = cell;
+    });
+    if (fields.code && normalizeCode(fields.code))
+      result.push({fields, raw: line});
   }
-  const [hStr, mStr = '00'] = s.split(':');
-  const h = parseInt(hStr, 10);
-  const mins = (mStr || '00').slice(0, 2).padStart(2, '0');
-  const cleaned = ampmHint.toUpperCase().replace(/[^AMPM]/g, '');
-  const period: 'AM' | 'PM' =
-    cleaned === 'AM' || cleaned === 'PM'
-      ? cleaned
-      : h >= 7 && h < 12
-      ? 'AM'
-      : 'PM';
-  return `${h.toString().padStart(2, '0')}:${mins} ${period}`;
+  return result;
 }
 
-export const isGenuineCorDocument = (
+function subjectFromTable(record: TableRecord): ParsedSubject {
+  const fields = record.fields;
+  const schedule = [fields.days, fields.time].filter(Boolean).join(' ');
+  const code = normalizeCode(fields.code ?? '');
+  const codeMatch = fields.code?.trim().match(CODE);
+  const combinedSection = codeMatch
+    ? fields.code!.trim().slice(codeMatch[0].length).trim()
+    : '';
+  let section =
+    fields.section?.trim() ||
+    (isClassCode(combinedSection) ? combinedSection : '');
+  let title = fields.title ?? '';
+  // Recover a short class code accidentally included before a description, not ordinary words.
+  const [first, ...rest] = title.trim().split(/\s+/);
+  if (
+    !section &&
+    rest.length &&
+    isClassCode(first) &&
+    (/\d/.test(first) || /^(?:[A-Z][a-z]){2,}$/.test(first))
+  ) {
+    section = first;
+    title = rest.join(' ');
+  }
+  return finishSubject(
+    {
+      code,
+      section,
+      title,
+      units: Number(fields.units),
+      room: fields.room ?? '',
+      instructor: fields.instructor ?? '',
+    },
+    schedule,
+    /^TBA$/i.test(fields.time?.trim() ?? ''),
+  );
+}
+
+function finishSubject(
+  details: Omit<ParsedSubject, 'days' | 'startTime' | 'endTime' | 'review'>,
+  scheduleText: string,
+  explicitTBA: boolean,
+): ParsedSubject {
+  const fields: ScanReview['fields'] = [];
+  const notes: string[] = [];
+  const title = cleanTitle(details.title, details.code, details.section);
+  const units =
+    Number.isInteger(details.units) && details.units >= 1 && details.units <= 6
+      ? details.units
+      : 0;
+  if (!title) fields.push('title');
+  if (!units) fields.push('units');
+  const ranges = extractTimeRanges(scheduleText);
+  let days = parseScheduleDays(scheduleText);
+  let startTime = '';
+  let endTime = '';
+  const unique = new Set(
+    ranges
+      .filter(range => range.valid)
+      .map(range => `${range.startTime}|${range.endTime}`),
+  );
+  if (unique.size === 1 && ranges.every(range => range.valid)) {
+    startTime = ranges[0].startTime;
+    endTime = ranges[0].endTime;
+    if (ranges.some(range => range.inferred)) {
+      fields.push('time');
+      notes.push('Check inferred AM/PM.');
+    }
+  } else if (unique.size > 1) {
+    days = [];
+    fields.push('time', 'days');
+    notes.push('Multiple meeting times. Review the schedule.');
+  }
+  if (!explicitTBA) {
+    if (!days.length && !fields.includes('days')) fields.push('days');
+    if (!startTime && !fields.includes('time')) fields.push('time');
+  }
+  return {
+    ...details,
+    title,
+    section: details.section.trim(),
+    room: details.room.trim(),
+    instructor: details.instructor.replace(/\s+/g, ' ').trim(),
+    units,
+    days,
+    startTime,
+    endTime,
+    review: {fields, notes, scheduleText, explicitTBA},
+  };
+}
+
+function textSubjects(lines: string[]): ParsedSubject[] {
+  const starts: Array<{index: number; code: string; tail: string}> = [];
+  lines.forEach((line, index) => {
+    const match = line.match(CODE);
+    if (!match || EXCLUDED_CODES.has(match[1].toUpperCase())) return;
+    const tail = line
+      .slice(match[0].length)
+      .replace(/^\s*[-|:]\s*/, '')
+      .trim();
+    const previousStart = starts[starts.length - 1];
+    if (
+      !tail &&
+      previousStart?.index === index - 1 &&
+      line.length <= 5 &&
+      isClassCode(line) &&
+      /[A-Za-z]{3}/.test(lines[index + 1] ?? '') &&
+      !normalizeCode(lines[index + 1] ?? '')
+    )
+      return;
+    // A standalone room after units is not a second course.
+    if (
+      !tail &&
+      UNIT.test(lines[index - 1] ?? '') &&
+      (extractTimeRanges(lines[index + 1] ?? '').length ||
+        isDaysOnly(lines[index + 1] ?? '') ||
+        /^(?:MAC|CICS|ROOM|LAB)\d/i.test(line))
+    )
+      return;
+    starts.push({index, code: normalizeCode(match[0]), tail});
+  });
+  return starts
+    .map((item, index) => {
+      const context = [
+        item.tail,
+        ...lines.slice(
+          item.index + 1,
+          starts[index + 1]?.index ?? lines.length,
+        ),
+      ].filter(Boolean);
+      let section =
+        context
+          .find(line => /^\s*(?:section|sec)\s*[:.]\s*/i.test(line))
+          ?.replace(/^\s*(?:section|sec)\s*[:.]\s*/i, '') ?? '';
+      let titleStart = 0;
+      let first = context[0] ?? '';
+      const sectionMatch = first.match(/^(\*?[A-Za-z0-9]{2,8})\b(?:\s+|$)/);
+      if (
+        !section &&
+        sectionMatch &&
+        isClassCode(sectionMatch[1]) &&
+        (/\d/.test(sectionMatch[1]) ||
+          /^\*?(?:[A-Z]{2,8}|(?:[A-Z][a-z]){1,4})$/.test(sectionMatch[1])) &&
+        !isDaysOnly(sectionMatch[1]) &&
+        !/^TBA$/i.test(sectionMatch[1]) &&
+        (sectionMatch[0].trim() !== first.trim() ||
+          !UNIT.test(context[1] ?? ''))
+      ) {
+        section = sectionMatch[1];
+        first = first.slice(sectionMatch[0].length).trim();
+        if (first) context[0] = first;
+        else titleStart = 1;
+      }
+
+      const explicitUnits = context
+        .join(' ')
+        .match(
+          /\b(?:units?|credits?)\s*[:=]\s*([\d.]+)|\b([1-6](?:\.0)?)\s*(?:units?|credits?)\b/i,
+        );
+      const unitIndex = context.findIndex(line => UNIT.test(line));
+      let units = explicitUnits
+        ? Number(explicitUnits[1] ?? explicitUnits[2])
+        : unitIndex >= 0
+        ? Number(context[unitIndex])
+        : 0;
+      let room =
+        context
+          .find(line => /^room\s*[:.]/i.test(line))
+          ?.replace(/^room\s*[:.]\s*/i, '') ?? '';
+      if (!room && unitIndex >= 0 && isRoom(context[unitIndex + 1] ?? ''))
+        room = context[unitIndex + 1];
+      const instructorLine = context.find(line =>
+        /^(?:instructor|faculty)\s*[:.]/i.test(line),
+      );
+      const instructor =
+        instructorLine?.replace(/^(?:instructor|faculty)\s*[:.]\s*/i, '') ??
+        context.map(line => line.match(INSTRUCTOR)?.[0]).find(Boolean) ??
+        '';
+
+      const scheduleLines = context.filter(
+        (line, i) =>
+          extractTimeRanges(line).length ||
+          isDaysOnly(line) ||
+          /^TBA$/i.test(line) ||
+          /\b(?:time|schedule)\s*:/i.test(line) ||
+          (extractTimeRanges(context[i - 1] ?? '').length &&
+            /\b(?:am|pm)\b/i.test(line)),
+      );
+      const titles: string[] = [];
+      for (const line of context.slice(titleStart)) {
+        if (
+          UNIT.test(line) ||
+          isRoom(line) ||
+          isDaysOnly(line) ||
+          /^TBA$/i.test(line) ||
+          INSTRUCTOR.test(line) ||
+          /^(?:section|sec|room|instructor|faculty|units?|credits?|total|assessment|fees?)\b/i.test(
+            line,
+          )
+        ) {
+          if (titles.length) break;
+          continue;
+        }
+        let candidate = stripScheduleText(line);
+        if (extractTimeRanges(line).length) {
+          // In a one-line row, a numeric unit immediately before the schedule is structural evidence.
+          const range = extractTimeRanges(line)[0];
+          const prefix = stripScheduleText(line.slice(0, range.index));
+          const inlineUnit = prefix.match(/\s([1-6](?:\.0)?)\s*$/);
+          if (inlineUnit) {
+            units = Number(inlineUnit[1]);
+            candidate = prefix.slice(0, inlineUnit.index).trim();
+          } else candidate = prefix;
+          const suffix = stripScheduleText(
+            line.slice(range.index + range.raw.length),
+          );
+          if (!room)
+            room =
+              suffix
+                .split(/\s+/)
+                .find(token => isRoom(token) && token !== section) ?? '';
+        }
+        candidate = candidate
+          .replace(
+            /\b(?:units?|credits?)\s*[:=]\s*[\d.]+|\b[1-6](?:\.0)?\s*(?:units?|credits?)\b/gi,
+            '',
+          )
+          .trim();
+        if (candidate && /[A-Za-z]{3}/.test(candidate)) titles.push(candidate);
+        if (extractTimeRanges(line).length) break;
+      }
+      return finishSubject(
+        {
+          code: item.code,
+          section,
+          title: titles.join(' '),
+          units,
+          room,
+          instructor,
+        },
+        scheduleLines.map(line => line.replace(INSTRUCTOR, '')).join('\n'),
+        scheduleLines.some(line => /^TBA$/i.test(line)),
+      );
+    })
+    .filter(subject => subject.code);
+}
+
+export function parseCorDocument(document: OcrDocument): ParseResult {
+  const text = normalizeText(document.text);
+  const lines = text
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+  const table = readTable(document);
+  const records = table.length ? table : delimitedTable(lines);
+  const subjects = records.length
+    ? records.map(subjectFromTable)
+    : textSubjects(lines);
+  const merged: ParsedSubject[] = [];
+  for (const subject of subjects) {
+    const existingIndex = merged.findIndex(
+      existing =>
+        existing.code === subject.code && existing.section === subject.section,
+    );
+    if (existingIndex < 0) {
+      merged.push(subject);
+      continue;
+    }
+    const previous = merged[existingIndex];
+    const combined = finishSubject(
+      {
+        code: previous.code,
+        section: previous.section,
+        title: previous.title || subject.title,
+        units:
+          previous.units && subject.units && previous.units !== subject.units
+            ? 0
+            : previous.units || subject.units,
+        room: previous.room || subject.room,
+        instructor: previous.instructor || subject.instructor,
+      },
+      [previous.review.scheduleText, subject.review.scheduleText]
+        .filter(Boolean)
+        .join('\n'),
+      previous.review.explicitTBA && subject.review.explicitTBA,
+    );
+    if (previous.room && subject.room && previous.room !== subject.room) {
+      combined.room = `${previous.room} / ${subject.room}`;
+      combined.review.notes.push('Multiple rooms; check the meeting details.');
+    }
+    merged[existingIndex] = combined;
+  }
+  return {...readTerm(text), subjects: merged};
+}
+
+export function parseCorText(text: string): ParseResult {
+  return parseCorDocument({text});
+}
+
+export function isGenuineCorDocument(
   rawText: string,
   subjects: ParsedSubject[],
-): boolean => {
-  if (subjects.length === 0) return false;
-
-  const lower = rawText.toLowerCase();
-
-  // Tier 1: Check for Institutional Keywords
-  const institutionalKeywords = [
-    'mindanao state university',
-    'msu',
-    'certificate of registration',
-    'office of the registrar',
-    'student registration',
-    'matriculation',
-    'cor',
-  ];
-  const hasInstitutional = institutionalKeywords.some(kw => lower.includes(kw));
-
-  // Tier 2: Check for Table Headers & Academic Keywords
-  const structuralKeywords = [
+): boolean {
+  if (!subjects.length) return false;
+  const institutional =
+    /\b(?:mindanao state university|msu|certificate of registration|office of the registrar|student registration|matriculation|cor)\b/i.test(
+      rawText,
+    );
+  const headers = [
     'subject',
     'code',
     'title',
@@ -162,282 +457,16 @@ export const isGenuineCorDocument = (
     'room',
     'section',
     'semester',
-    'lec',
-    'lab',
-  ];
-  const structuralScore = structuralKeywords.filter(kw =>
-    lower.includes(kw),
-  ).length;
-
-  // Tier 3: Temporal & Day Density Check
-  const timeMatches = (rawText.match(/\d{1,2}:\d{2}/g) || []).length;
-  const dayMatches = (
-    rawText.match(/\b(MON|TUE|WED|THU|FRI|SAT|SUN|MWF|TTH|MTH|MTWTHF)\b/gi) ||
-    []
-  ).length;
-
-  // Case A: Full document scan with institutional header and valid subjects
-  if (hasInstitutional && subjects.length >= 1) return true;
-
-  // Case B: Tightly cropped schedule table (must have academic column headers OR strong time/day patterns)
-  if (structuralScore >= 2 && subjects.length >= 1) return true;
-  if ((timeMatches >= 1 || dayMatches >= 1) && subjects.length >= 1)
-    return true;
-
-  // False positive (e.g., random receipt or non-academic image)
-  return false;
-};
-
-export function parseCorText(rawText: string): ParseResult {
-  const text = rawText
-    .replace(/\bOpm\b/g, '0pm')
-    .replace(/\bpn\b/gi, 'pm')
-    .replace(/\barn\b/gi, 'am')
-    .replace(/STTO/gi, 'STT0')
-    .replace(
-      /\b[1l|]([A-Z]{2,3}\d{3})(?!\d)/gi,
-      (_, p1) => 'I' + p1.toUpperCase(),
+  ].filter(word => new RegExp(`\\b${word}\\b`, 'i').test(rawText));
+  return (
+    institutional ||
+    headers.length >= 2 ||
+    subjects.some(
+      subject =>
+        subject.title &&
+        subject.days.length &&
+        subject.startTime &&
+        subject.endTime,
     )
-    .replace(
-      /\b([A-Z]{2,4}[1-9])O(\d)(?!\d)/gi,
-      (_, p1, p2) => p1.toUpperCase() + '0' + p2,
-    )
-    .replace(/(\d{1,2}:\d{2})\s*[Aa][l1|][Mm]/g, '$1am')
-    .replace(/(\d{1,2}:\d{2})\s*[Pp][l1|][Mm]/g, '$1pm')
-    .replace(/[–—]/g, '-')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '');
-
-  const lines = text
-    .split('\n')
-    .map(l => l.trim())
-    .filter(l => l.length > 0);
-  const fullText = lines.join(' ');
-
-  let detectedSemester: string | null = null;
-  const semLabelMatch = fullText.match(
-    /Semester\s*[:]\s*(first|1st|second|2nd|summer)\s*sem(?:ester)?/i,
   );
-  if (semLabelMatch) {
-    const r = semLabelMatch[1].toLowerCase();
-    detectedSemester =
-      r.startsWith('1') || r === 'first'
-        ? '1st Sem'
-        : r.startsWith('2') || r === 'second'
-        ? '2nd Sem'
-        : 'Summer';
-  } else {
-    for (const [pat, label] of [
-      [/first\s+sem(?:ester)?/i, '1st Sem'],
-      [/1st\s+sem(?:ester)?/i, '1st Sem'],
-      [/second\s+sem(?:ester)?/i, '2nd Sem'],
-      [/2nd\s+sem(?:ester)?/i, '2nd Sem'],
-      [/summer\s*(?:class|term|sem)?/i, 'Summer'],
-    ] as [RegExp, string][]) {
-      if (pat.test(fullText)) detectedSemester = label;
-    }
-  }
-
-  const yearMatch = fullText.match(
-    /(?:A\.?Y\.?|S\.?Y\.?|Acad\.?\s+Year|Academic\s+Year)\s*[:–-]?\s*(\d{4}[-–]\d{4}|\d{4}[-–]\d{2})/i,
-  );
-  const yearSuffix = yearMatch ? `, ${yearMatch[1].replace('–', '-')}` : '';
-  const academicTerm = detectedSemester
-    ? `${detectedSemester}${yearSuffix}`
-    : null;
-
-  const CODE_SRC = /\b([A-Z]{2,4})\s?(\d{3}(?:\.\d)?)(?!\d)/.source;
-  const codeItems: {code: string; lineIndex: number}[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const local = new RegExp(CODE_SRC, 'gi');
-    let m: RegExpExecArray | null;
-    while ((m = local.exec(lines[i])) !== null) {
-      const prefix = m[1].toUpperCase();
-      const normalized = `${prefix}${m[2]}`;
-
-      if (!NON_CODE_PREFIXES.has(prefix)) {
-        const isDuplicate = codeItems.some(
-          c => c.code === normalized && Math.abs(c.lineIndex - i) <= 2,
-        );
-        if (!isDuplicate) {
-          codeItems.push({code: normalized, lineIndex: i});
-        }
-      }
-    }
-  }
-
-  const TIME_SRC =
-    /(\d{1,2}(?::\d{2})?)\s*([AaPp][Mm])?\s*[-–to]+\s*(\d{1,2}(?::\d{2})?)\s*([AaPp][Mm])/
-      .source;
-  const DAY_SRC =
-    /\b(MTWTHF|MTTHF|MWTHF|MWTH|TWTH|MWF|MTH|TTH|MWS|MFS|FS|MF|MW|TF|WF|[MTWFHS]{1,6})\b/
-      .source;
-  const DAY_RE = new RegExp(DAY_SRC);
-
-  interface FoundSchedule {
-    lineIndex: number;
-    start: string;
-    end: string;
-    days: string[];
-  }
-  const foundSchedules: FoundSchedule[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const localRx = new RegExp(TIME_SRC, 'gi');
-    let m: RegExpExecArray | null;
-    while ((m = localRx.exec(line)) !== null) {
-      const endAmPm = (m[4] || '').toLowerCase();
-      const startAmPm = (m[2] || endAmPm).toLowerCase();
-      let daysRaw = '';
-      const sameMatch = line.match(DAY_RE);
-      if (sameMatch) daysRaw = sameMatch[1];
-      else if (i > 0 && DAY_RE.test(lines[i - 1]))
-        daysRaw = lines[i - 1].match(DAY_RE)![1];
-      else if (i + 1 < lines.length && DAY_RE.test(lines[i + 1]))
-        daysRaw = lines[i + 1].match(DAY_RE)![1];
-      foundSchedules.push({
-        lineIndex: i,
-        start: normalizeTime(m[1], startAmPm),
-        end: normalizeTime(m[3], endAmPm || startAmPm),
-        days: daysRaw ? parseDays(daysRaw) : [],
-      });
-    }
-  }
-
-  const TIME_TEST_RE = /\d{1,2}:\d{2}/;
-  const CODE_TEST_RE = new RegExp(CODE_SRC, 'i');
-  const DAY_ONLY_RE = new RegExp(`^(${DAY_SRC.slice(3, -4)})$`, 'i');
-
-  const isValidRoom = (t: string): boolean => {
-    return (
-      t.length >= 2 &&
-      t.length <= 10 &&
-      !t.includes(' ') &&
-      !codeItems.some(c => c.code === t.toUpperCase()) &&
-      !ROOM_EXCLUDES.has(t.toUpperCase()) &&
-      !DAY_ONLY_RE.test(t) &&
-      !TIME_TEST_RE.test(t) &&
-      !/^[1-6]$/.test(t) &&
-      !/^\d{1,2}$/.test(t) &&
-      (/^\d{3,4}$/.test(t) ||
-        (/[A-Za-z]/.test(t) && /\d/.test(t)) ||
-        /[Ll]ab$/.test(t) ||
-        /^[A-Z]{2,4}$/.test(t))
-    );
-  };
-
-  const extractInstructor = (ctx: string): string => {
-    const m = ctx.match(
-      /(?:Prof\.?|Dr\.?|Mr\.?|Ms\.?|Mrs\.?|Engr\.?|Atty\.?|Inst\.?)\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*/,
-    );
-    return m ? m[0].trim() : '';
-  };
-
-  const subjects: ParsedSubject[] = codeItems.map((item, idx) => {
-    const nextCodeLine = codeItems[idx + 1]?.lineIndex ?? lines.length;
-    const windowEnd = Math.min(item.lineIndex + 8, nextCodeLine);
-    const ctxLines = lines.slice(item.lineIndex, windowEnd);
-    const ctxText = ctxLines.join(' ');
-
-    let bestSchedule: FoundSchedule | null = null;
-    let bestDist = Infinity;
-    for (const sched of foundSchedules) {
-      const dist = sched.lineIndex - item.lineIndex;
-      if (dist >= 0 && dist < bestDist && sched.lineIndex < windowEnd) {
-        bestDist = dist;
-        bestSchedule = sched;
-      }
-    }
-
-    let section = '';
-    let titleStart = 1;
-    if (ctxLines.length > 1) {
-      const candidate = ctxLines[1].trim();
-      if (
-        candidate.length >= 1 &&
-        candidate.length <= 8 &&
-        !candidate.includes(' ') &&
-        !CODE_TEST_RE.test(candidate) &&
-        !TIME_TEST_RE.test(candidate) &&
-        !DAY_ONLY_RE.test(candidate) &&
-        !/^\d+$/.test(candidate)
-      ) {
-        section = candidate;
-        titleStart = 2;
-      }
-    }
-
-    let title = '';
-    for (let j = titleStart; j < ctxLines.length; j++) {
-      const l = ctxLines[j];
-      if (
-        l.includes(' ') &&
-        l.length >= 8 &&
-        /[a-zA-Z]/.test(l) &&
-        !CODE_TEST_RE.test(l) &&
-        !TIME_TEST_RE.test(l) &&
-        !DAY_ONLY_RE.test(l.trim())
-      ) {
-        title = l;
-        break;
-      }
-    }
-
-    let units = 3;
-    let unitsLineIdx = -1;
-    for (let j = 0; j < ctxLines.length; j++) {
-      if (/^[1-6]$/.test(ctxLines[j].trim())) {
-        units = parseInt(ctxLines[j].trim(), 10);
-        unitsLineIdx = j;
-        break;
-      }
-    }
-
-    let room = '';
-    if (unitsLineIdx >= 0 && unitsLineIdx + 1 < ctxLines.length) {
-      const candidate = ctxLines[unitsLineIdx + 1].trim();
-      if (isValidRoom(candidate)) room = candidate;
-    }
-
-    if (unitsLineIdx === -1) {
-      const explicit =
-        ctxText.match(/\b([1-6])\s*units?\b/i) || ctxText.match(/\(([1-6])\)/);
-      if (explicit) {
-        units = Math.min(6, Math.max(1, parseInt(explicit[1], 10)));
-      } else {
-        const allTimeMatches = [
-          ...ctxText.matchAll(/\d{1,2}:\d{2}\s*[AaPp][Mm]/g),
-        ];
-        const lastTimeMatch = allTimeMatches.pop();
-        if (lastTimeMatch) {
-          const afterStr = ctxText
-            .slice(lastTimeMatch.index! + lastTimeMatch[0].length)
-            .trim();
-          const tokens = afterStr.split(/\s+/).filter(t => t.length > 0);
-          if (tokens.length >= 1 && /^[1-6]$/.test(tokens[0])) {
-            units = parseInt(tokens[0], 10);
-            if (!room && tokens.length >= 2 && isValidRoom(tokens[1])) {
-              room = tokens[1];
-            }
-          }
-        }
-      }
-    }
-
-    return {
-      code: item.code,
-      section,
-      title,
-      units,
-      days: bestSchedule?.days || [],
-      startTime: bestSchedule?.start || '',
-      endTime: bestSchedule?.end || '',
-      room,
-      instructor: extractInstructor(ctxText),
-    };
-  });
-
-  return {detectedSemester, academicTerm, subjects};
 }

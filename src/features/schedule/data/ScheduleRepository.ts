@@ -1,6 +1,10 @@
 import {Database, Model, Q} from '@nozbe/watermelondb';
 import Schedule from '../../../core/database/models/Schedule';
 import Subject from '../../../core/database/models/Subject';
+import ScheduleActivity, {
+  ScheduleActivityKind,
+} from '../../../core/database/models/ScheduleActivity';
+import {changedSubjectFields} from '../domain/activity';
 import {SaveSubjectInput} from '../domain/types';
 import {
   findTimeConflict,
@@ -12,6 +16,24 @@ import {
 /** Owns schedule persistence. Native side effects belong to the application service. */
 export class ScheduleRepository {
   constructor(private readonly database: Database) {}
+
+  private activity(
+    scheduleId: string,
+    kind: ScheduleActivityKind,
+    label: string,
+    detail: string,
+    subjectId?: string,
+  ) {
+    return this.database
+      .get<ScheduleActivity>('schedule_activities')
+      .prepareCreate(record => {
+        record.scheduleId = scheduleId;
+        record.subjectId = subjectId;
+        record.kind = kind;
+        record.label = label;
+        record.detail = detail;
+      });
+  }
 
   findSubject(id: string) {
     return this.database.get<Subject>('subjects').find(id);
@@ -97,6 +119,15 @@ export class ScheduleRepository {
         ? await this.findSubject(input.subjectId)
         : undefined;
       const oldSchedule = subject ? await subject.schedule.fetch() : undefined;
+      const moved = !!oldSchedule && oldSchedule.id !== schedule?.id;
+      const changes = subject
+        ? changedSubjectFields(subject, input.subject)
+        : [];
+      const targetChanged =
+        input.declaredUnits !== undefined &&
+        input.declaredUnits !== schedule?.totalSubjects;
+      if (subject && !moved && !changes.length && !targetChanged)
+        return subject;
       const removeOldSchedule =
         oldSchedule &&
         oldSchedule.id !== schedule?.id &&
@@ -123,8 +154,26 @@ export class ScheduleRepository {
         ? subject.prepareUpdate(updateSubject)
         : this.database.get<Subject>('subjects').prepareCreate(updateSubject);
       operations.push(savedSubject);
+      const kind = !subject ? 'added' : moved ? 'moved' : 'updated';
+      operations.push(
+        this.activity(
+          targetSchedule.id,
+          kind,
+          `${input.subject.code} ${kind}`,
+          kind === 'added'
+            ? input.subject.title
+            : kind === 'moved'
+            ? input.academicTerm
+            : [...changes, ...(targetChanged ? ['Unit target'] : [])].join(
+                ' · ',
+              ),
+          savedSubject.id,
+        ),
+      );
       if (removeOldSchedule) {
         operations.push(oldSchedule.prepareDestroyPermanently());
+      } else if (moved && oldSchedule) {
+        operations.push(oldSchedule.prepareUpdate());
       }
       await this.database.batch(...operations);
       return savedSubject;
@@ -138,7 +187,16 @@ export class ScheduleRepository {
       const isLastSubject = (await schedule.subjects.fetchCount()) === 1;
       await this.database.batch(
         subject.prepareDestroyPermanently(),
-        isLastSubject ? schedule.prepareDestroyPermanently() : null,
+        isLastSubject
+          ? schedule.prepareDestroyPermanently()
+          : schedule.prepareUpdate(),
+        this.activity(
+          schedule.id,
+          'removed',
+          `${subject.code} removed`,
+          subject.title,
+          subject.id,
+        ),
       );
     });
   }
@@ -150,6 +208,12 @@ export class ScheduleRepository {
       await this.database.batch(
         ...subjects.map(subject => subject.prepareDestroyPermanently()),
         schedule.prepareDestroyPermanently(),
+        this.activity(
+          schedule.id,
+          'schedule_removed',
+          'Schedule removed',
+          schedule.academicTerm,
+        ),
       );
     });
   }
